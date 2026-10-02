@@ -1,0 +1,9 @@
+.venv/
+models/
+llama/
+__pycache__/
+*.log
+transcript*.txt
+*.srt
+hotwords.txt
+debug*/
