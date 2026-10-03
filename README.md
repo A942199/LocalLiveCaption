@@ -39,3 +39,23 @@ Windows 本地实时字幕工具。本项目在开源项目基础上进行修改
 主程序：
 
 `live-caption-ja.pyw`
+
+## 新电脑安装
+
+目标环境：**Windows 10/11 x64 + NVIDIA GPU**。请先安装较新的 NVIDIA 显卡驱动，并保持网络连接。
+
+1. 下载或克隆本仓库。
+2. 双击 `setup.bat`。
+3. 等待安装完成后，双击 `live-caption-ja.pyw`。
+
+`setup.bat` 会自动完成：
+
+- 检查 Python 3.11+；如果未安装且系统有 `winget`，会自动安装 Python 3.11。
+- 创建项目自己的 `.venv` 并安装 Python 依赖。
+- 从 Hugging Face 下载 Qwen3-ASR-1.7B 的两个 GGUF 模型文件（约 2.8 GB）。
+- 从 llama.cpp 最近的 GitHub Releases 自动选择兼容的 **Windows x64 CUDA** 构建：优先 CUDA 12.x，如当前版本只提供 CUDA 13.x 则自动回退，并下载匹配的 CUDA Runtime DLL，然后解压到 `llama/`。
+- 检查模型、Python 依赖和 `llama-server.exe` 是否可用。
+
+安装生成的 `.venv/`、`models/`、`llama/`、日志和字幕文件都已加入 `.gitignore`，不会提交到仓库。
+
+> 日语语音识别完全在本机运行；中文翻译需要联网。若新电脑没有 NVIDIA 驱动，或驱动版本过旧，请先更新驱动。

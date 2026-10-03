@@ -55,7 +55,7 @@ if "--out" not in _lc_sys.argv:
 live_caption.py — 实时把「电脑正在播放的声音」转成字幕（本地 GPU，免费）
 
   采集: WASAPI loopback (pyaudiowpatch)，不需要 VB-Cable / 立体声混音
-  识别: Qwen3-ASR-1.7B（transformers, bf16），实测中文远好于 whisper-large-v3；Silero VAD 切句
+  识别: Qwen3-ASR-1.7B GGUF + llama.cpp（NVIDIA GPU）；Silero VAD 切句
   显示: 屏幕底部悬浮字幕条（可拖动、可调字号），同时也打到终端 / 文件
 
 用法:
@@ -79,22 +79,6 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 from datetime import datetime, timedelta
 
-
-# ---------- CUDA DLL 路径（仅 --backend hf 需要；pip 装的 nvidia-cublas-cu12 / nvidia-cudnn-cu12） ----------
-def _add_nvidia_dlls():
-    base = os.path.join(sys.prefix, "Lib", "site-packages", "nvidia")
-    if not os.path.isdir(base):
-        return
-    for sub in os.listdir(base):
-        b = os.path.join(base, sub, "bin")
-        if os.path.isdir(b):
-            os.environ["PATH"] = b + os.pathsep + os.environ.get("PATH", "")
-            if hasattr(os, "add_dll_directory"):
-                os.add_dll_directory(b)
-
-
-_add_nvidia_dlls()
-os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 import numpy as np
 import pyaudiowpatch as pyaudio
@@ -657,35 +641,8 @@ QWEN_LANG = {"zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean",
              "it": "Italian", "ar": "Arabic", "th": "Thai", "vi": "Vietnamese", "id": "Indonesian"}
 
 
-class QwenBackend:
-    """Qwen3-ASR (transformers 后端)。context 参数可塞热词/上一句。"""
-    name = "Qwen3-ASR"
-
-    def __init__(self, model_name, lang, hotwords, use_context):
-        import torch, transformers
-        transformers.logging.set_verbosity_error()
-        from qwen_asr import Qwen3ASRModel
-        self.model = Qwen3ASRModel.from_pretrained(model_name, dtype=torch.bfloat16, device_map="cuda:0",
-                                                   max_inference_batch_size=4, max_new_tokens=256)
-        self.lang = QWEN_LANG.get(lang, lang) if lang else None
-        self.hot = hotwords or ""
-        self.use_context = use_context
-        self.last = ""
-
-    def warmup(self):
-        self.model.transcribe(audio=(np.zeros(SR, dtype=np.float32), SR), language=self.lang)
-
-    def transcribe(self, audio):
-        ctx = self.hot
-        if self.use_context and self.last:
-            ctx = (ctx + "\n" + self.last[-80:]).strip()
-        r = self.model.transcribe(audio=(audio, SR), context=ctx, language=self.lang)
-        return _clean(r[0].text) if r else ""
-
-
 class LlamaBackend:
-    """llama.cpp llama-server (b10941+ 支持 Qwen3-ASR 的 mtmd 音频)，HTTP /completion + multimodal_data。
-    解码比 HF transformers 快好几倍。"""
+    """llama.cpp llama-server (b10941+ 支持 Qwen3-ASR 的 mtmd 音频)。"""
     name = "llama.cpp"
 
     def __init__(self, server_exe, model, mmproj, lang, hotwords, use_context, port=8765, url=None, slots=2):
@@ -891,21 +848,14 @@ def run_asr(args, sink, stop, status=None):
         print(f"热词: {hot}")
     here = os.path.dirname(os.path.abspath(__file__))
     t = time.time()
-    if args.backend == "llama":
-        if not args.llama_server:
-            args.llama_server = find_llama_server(here)
-        model = args.model or os.path.join(here, "models", "Qwen3-ASR-1.7B-Q8_0.gguf")
-        mmproj = args.mmproj or os.path.join(here, "models", "mmproj-Qwen3-ASR-1.7B-bf16.gguf")
-        print(f"加载模型 {os.path.basename(model)} (llama.cpp) …", flush=True)
-        if status:
-            status("加载模型 (llama.cpp) …")
-        be = LlamaBackend(args.llama_server, model, mmproj, args.lang, hot, args.context, args.llama_port, args.llama_url, args.slots)
-    else:
-        model = args.model or "Qwen/Qwen3-ASR-1.7B"
-        print(f"加载模型 {model} (transformers) …", flush=True)
-        if status:
-            status(f"加载模型 {model} …")
-        be = QwenBackend(model, args.lang, hot, args.context)
+    if not args.llama_server:
+        args.llama_server = find_llama_server(here)
+    model = args.model or os.path.join(here, "models", "Qwen3-ASR-1.7B-Q8_0.gguf")
+    mmproj = args.mmproj or os.path.join(here, "models", "mmproj-Qwen3-ASR-1.7B-bf16.gguf")
+    print(f"加载模型 {os.path.basename(model)} (llama.cpp) …", flush=True)
+    if status:
+        status("加载模型 (llama.cpp) …")
+    be = LlamaBackend(args.llama_server, model, mmproj, args.lang, hot, args.context, args.llama_port, args.llama_url, args.slots)
     get_vad_model()
     be.warmup()
     print(f"模型就绪 {time.time() - t:.1f}s。开始监听。\n", flush=True)
@@ -1077,9 +1027,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true", help="列出输出设备后退出")
     ap.add_argument("--device", type=int, default=None, help="输出设备 index（默认=系统默认输出）")
-    ap.add_argument("--backend", default="llama", choices=["llama", "hf"], help="llama=llama.cpp GGUF(快) / hf=transformers")
-    ap.add_argument("--model", default=None, help="llama: gguf 路径(默认 models/Qwen3-ASR-1.7B-Q8_0.gguf)；hf: 模型名(默认 Qwen/Qwen3-ASR-1.7B)")
-    ap.add_argument("--mmproj", default=None, help="llama: mmproj gguf 路径")
+    ap.add_argument("--model", default=None, help="GGUF 模型路径（默认 models/Qwen3-ASR-1.7B-Q8_0.gguf）")
+    ap.add_argument("--mmproj", default=None, help="mmproj GGUF 路径（默认 models/mmproj-Qwen3-ASR-1.7B-bf16.gguf）")
     ap.add_argument("--llama-server", default=None, help="llama-server.exe 路径（默认按 LLAMA_SERVER 环境变量 / 脚本旁 llama/ 目录 / PATH 查找）")
     ap.add_argument("--llama-port", type=int, default=8765)
     ap.add_argument("--llama-url", default=None, help="连接已经在跑的 llama-server，而不是自己起一个")
