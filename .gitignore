@@ -7,3 +7,4 @@ transcript*.txt
 *.srt
 hotwords.txt
 debug*/
+live-caption-settings.json

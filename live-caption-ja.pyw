@@ -65,7 +65,7 @@ live_caption.py — 实时把「电脑正在播放的声音」转成字幕（本
   python live_caption.py --device 7                # 指定输出设备(index)
   python live_caption.py --console                 # 不要悬浮窗，只在终端显示
   python live_caption.py --out notes.txt --srt notes.srt
-字幕窗: 鼠标拖动移动位置；滚轮调字号；右键或 Esc 退出。终端 Ctrl+C 退出。
+字幕窗: 鼠标拖动移动位置；滚轮调字号；右上角 ⚙ 打开设置；× 或 Esc 退出。终端 Ctrl+C 退出。
 """
 import argparse
 import os
@@ -209,10 +209,96 @@ class OverlaySink:
             pass
         self.tk = tk
         self.q = queue.Queue()
-        self.hold = hold
-        self.alpha = alpha
-        self.font_name = font
-        self.font_size = font_size
+        self.settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live-caption-settings.json")
+        self._initial_settings = {
+            "asr_model": "Q8_0",
+            "context_enabled": True,
+            "context_history": 1,
+            "context_chars": 80,
+            "llama_ctx": 8192,
+            "slots": 2,
+            "max_tokens": 200,
+            "temperature": 0.0,
+            "partial_every": 0.4,
+            "silence": 0.5,
+            "vad_win": 0.2,
+            "vad_threshold": 0.45,
+            "vad_min_speech_ms": 100,
+            "vad_min_silence_ms": 200,
+            "vad_speech_pad_ms": 100,
+            "min_seg": 1.0,
+            "max_seg": 6.0,
+            "max_gain": 60.0,
+            "font_name": font,
+            "font_size": font_size,
+            "alpha": alpha,
+            "width_frac": width_frac,
+            "window_height": 0,
+            "bottom": bottom,
+            "hold": hold,
+            "current_color": "#ffffff",
+            "translation_color": "#d0d0d0",
+            "previous_color": "#9a9a9a",
+            "background_color": "#000000",
+            "topmost": True,
+            "show_previous": True,
+            "current_bold": True,
+        }
+        cfg = self._load_settings(self._initial_settings)
+
+        def number(key, cast, low, high):
+            try:
+                value = cast(cfg[key])
+            except (TypeError, ValueError):
+                value = cast(self._initial_settings[key])
+            return max(low, min(high, value))
+
+        def flag(key):
+            value = cfg[key]
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.strip().lower() not in ("", "0", "false", "no", "off")
+            return bool(value)
+
+        font_value = cfg["font_name"]
+        model_value = str(cfg.get("asr_model", "Q8_0")).upper()
+        self.asr_model = model_value if model_value in ("Q8_0", "BF16") else "Q8_0"
+        self.context_enabled = flag("context_enabled")
+        self.context_history = number("context_history", int, 1, 5)
+        self.context_chars = number("context_chars", int, 40, 1000)
+        self.llama_ctx = number("llama_ctx", int, 2048, 16384)
+        self.slots = number("slots", int, 1, 4)
+        self.max_tokens = number("max_tokens", int, 64, 512)
+        self.temperature = number("temperature", float, 0.0, 1.0)
+        self.partial_every = number("partial_every", float, 0.2, 2.0)
+        self.silence = number("silence", float, 0.2, 2.0)
+        self.vad_win = number("vad_win", float, 0.1, 1.0)
+        self.vad_threshold = number("vad_threshold", float, 0.1, 0.9)
+        self.vad_min_speech_ms = number("vad_min_speech_ms", int, 50, 1000)
+        self.vad_min_silence_ms = number("vad_min_silence_ms", int, 50, 2000)
+        self.vad_speech_pad_ms = number("vad_speech_pad_ms", int, 0, 1000)
+        self.min_seg = number("min_seg", float, 0.2, 5.0)
+        self.max_seg = number("max_seg", float, 2.0, 30.0)
+        self.max_gain = number("max_gain", float, 1.0, 100.0)
+        self.font_name = font_value.strip() if isinstance(font_value, str) and font_value.strip() else str(font)
+        self.font_size = number("font_size", int, 12, 80)
+        self.alpha = number("alpha", float, 0.20, 1.0)
+        self.width_frac = number("width_frac", float, 0.30, 1.0)
+        self.window_height = number("window_height", int, 0, 10000)
+        self.bottom = number("bottom", int, 0, 500)
+        self.hold = number("hold", float, 1.0, 20.0)
+        self.current_color = str(cfg["current_color"])
+        self.translation_color = str(cfg["translation_color"])
+        self.previous_color = str(cfg["previous_color"])
+        self.background_color = str(cfg["background_color"])
+        self.topmost = flag("topmost")
+        self.show_previous = flag("show_previous")
+        self.current_bold = flag("current_bold")
+        self.settings_win = None
+        self.asr_settings_win = None
+        self._setting_vars = None
+        self._settings_save_job = None
         self.finals = []          # 最近两句最终结果
         self.partial_text = ""
         self.translation_text = ""
@@ -224,30 +310,45 @@ class OverlaySink:
 
         root = tk.Tk()
         self.root = root
+        for attr, fallback in (
+            ("current_color", "#ffffff"),
+            ("translation_color", "#d0d0d0"),
+            ("previous_color", "#9a9a9a"),
+            ("background_color", "#000000"),
+        ):
+            setattr(self, attr, self._safe_color(getattr(self, attr), fallback))
         root.overrideredirect(True)
-        root.attributes("-topmost", True)
-        root.attributes("-alpha", alpha)
-        root.configure(bg="#000000")
+        root.attributes("-topmost", self.topmost)
+        root.attributes("-alpha", self.alpha)
+        root.configure(bg=self.background_color)
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        self.w = int(sw * width_frac)
-        self.bottom = bottom
+        self.w = int(sw * self.width_frac)
         self.sh = sh
 
-        self.f_cur = tkfont.Font(family=font, size=font_size, weight="bold")
-        self.f_trans = tkfont.Font(family=font, size=max(12, int(font_size * 0.82)), weight="normal")
-        self.f_prev = tkfont.Font(family=font, size=max(10, int(font_size * 0.68)), weight="normal")
-        self.l_prev = tk.Label(root, text="", fg="#9a9a9a", bg="#000000", justify="center", anchor="s",
+        self.f_cur = tkfont.Font(family=self.font_name, size=self.font_size,
+                                 weight="bold" if self.current_bold else "normal")
+        self.f_trans = tkfont.Font(family=self.font_name, size=max(12, int(self.font_size * 0.82)), weight="normal")
+        self.f_prev = tkfont.Font(family=self.font_name, size=max(10, int(self.font_size * 0.68)), weight="normal")
+        self.l_prev = tk.Label(root, text="", fg=self.previous_color, bg=self.background_color, justify="center", anchor="s",
                                font=self.f_prev, wraplength=self.w - 40, padx=20)
-        self.l_cur = tk.Label(root, text="", fg="#ffffff", bg="#000000", justify="center", anchor="n",
+        self.l_cur = tk.Label(root, text="", fg=self.current_color, bg=self.background_color, justify="center", anchor="n",
                               font=self.f_cur, wraplength=self.w - 40, padx=20)
-        self.l_trans = tk.Label(root, text="", fg="#d0d0d0", bg="#000000", justify="center", anchor="n",
+        self.l_trans = tk.Label(root, text="", fg=self.translation_color, bg=self.background_color, justify="center", anchor="n",
                                 font=self.f_trans, wraplength=self.w - 40, padx=20)
-        self.l_prev.pack(side="top", fill="x", pady=(8, 0))
+        if self.show_previous:
+            self.l_prev.pack(side="top", fill="x", pady=(8, 0))
         self.l_cur.pack(side="top", fill="x", pady=(2, 0))
         self.l_trans.pack(side="top", fill="x", pady=(0, 10))
-        self.hint = tk.Label(root, text="拖动=移动  滚轮=字号  Esc=退出", fg="#777777", bg="#000000", font=(font, 9))
-        self.hint.place(relx=1.0, rely=0.0, x=-30, anchor="ne")
-        self.close_btn = tk.Button(root, text="×", command=self.close, fg="#b0b0b0", bg="#000000",
+        self.hint = tk.Label(root, text="拖动=移动  边缘/角=缩放  滚轮=字号  ⚙=设置  Esc=退出",
+                             fg="#777777", bg=self.background_color, font=(self.font_name, 9))
+        self.hint.place(relx=1.0, rely=0.0, x=-58, anchor="ne")
+        self.settings_btn = tk.Button(root, text="⚙", command=self.open_settings,
+                                      fg="#b0b0b0", bg=self.background_color,
+                                      activeforeground="#ffffff", activebackground="#333333", relief="flat",
+                                      bd=0, highlightthickness=0, padx=5, pady=0,
+                                      font=("Segoe UI Symbol", 11), cursor="hand2")
+        self.settings_btn.place(relx=1.0, rely=0.0, x=-29, y=2, anchor="ne")
+        self.close_btn = tk.Button(root, text="×", command=self.close, fg="#b0b0b0", bg=self.background_color,
                                    activeforeground="#ffffff", activebackground="#333333", relief="flat",
                                    bd=0, highlightthickness=0, padx=6, pady=0, font=("Segoe UI", 13, "bold"), cursor="hand2")
         self.close_btn.place(relx=1.0, rely=0.0, x=-4, y=1, anchor="ne")
@@ -255,40 +356,583 @@ class OverlaySink:
         self._relayout(first=True)
 
         for wdg in (root, self.l_prev, self.l_cur, self.l_trans):
+            wdg.bind("<Motion>", self._resize_cursor)
             wdg.bind("<ButtonPress-1>", self._drag_start)
             wdg.bind("<B1-Motion>", self._drag_move)
+            wdg.bind("<ButtonRelease-1>", self._drag_end)
             wdg.bind("<MouseWheel>", self._wheel)
         root.bind("<Escape>", lambda e: self.close())
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(60, self._poll)
 
+    def _load_settings(self, defaults):
+        cfg = dict(defaults)
+        try:
+            with open(self.settings_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                for key in defaults:
+                    if key in saved:
+                        cfg[key] = saved[key]
+        except (OSError, ValueError, TypeError):
+            pass
+        return cfg
+
+    def _safe_color(self, color, fallback):
+        try:
+            self.root.winfo_rgb(color)
+            return color
+        except Exception:
+            return fallback
+
+    def _current_settings(self):
+        return {
+            "asr_model": self.asr_model,
+            "context_enabled": self.context_enabled,
+            "context_history": self.context_history,
+            "context_chars": self.context_chars,
+            "llama_ctx": self.llama_ctx,
+            "slots": self.slots,
+            "max_tokens": self.max_tokens,
+            "temperature": round(self.temperature, 3),
+            "partial_every": round(self.partial_every, 3),
+            "silence": round(self.silence, 3),
+            "vad_win": round(self.vad_win, 3),
+            "vad_threshold": round(self.vad_threshold, 3),
+            "vad_min_speech_ms": self.vad_min_speech_ms,
+            "vad_min_silence_ms": self.vad_min_silence_ms,
+            "vad_speech_pad_ms": self.vad_speech_pad_ms,
+            "min_seg": round(self.min_seg, 3),
+            "max_seg": round(self.max_seg, 3),
+            "max_gain": round(self.max_gain, 2),
+            "font_name": self.font_name,
+            "font_size": self.font_size,
+            "alpha": round(self.alpha, 3),
+            "width_frac": round(self.width_frac, 3),
+            "window_height": int(self.window_height),
+            "bottom": self.bottom,
+            "hold": round(self.hold, 2),
+            "current_color": self.current_color,
+            "translation_color": self.translation_color,
+            "previous_color": self.previous_color,
+            "background_color": self.background_color,
+            "topmost": self.topmost,
+            "show_previous": self.show_previous,
+            "current_bold": self.current_bold,
+        }
+
+    def _save_settings(self):
+        try:
+            with open(self.settings_path, "w", encoding="utf-8") as f:
+                json.dump(self._current_settings(), f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            print("保存字幕设置失败:", repr(e), flush=True)
+
+    def _schedule_save(self):
+        if self._settings_save_job is not None:
+            try:
+                self.root.after_cancel(self._settings_save_job)
+            except Exception:
+                pass
+        self._settings_save_job = self.root.after(350, self._save_settings)
+
+    def _apply_style(self, anchor_to_screen=False, keep_center=False):
+        old_center = self.root.winfo_x() + self.root.winfo_width() / 2
+        self.root.configure(bg=self.background_color)
+        self.root.attributes("-topmost", self.topmost)
+        if not self.fading:
+            self.root.attributes("-alpha", self.alpha)
+
+        self.f_cur.configure(family=self.font_name, size=self.font_size,
+                             weight="bold" if self.current_bold else "normal")
+        self.f_trans.configure(family=self.font_name, size=max(12, int(self.font_size * 0.82)))
+        self.f_prev.configure(family=self.font_name, size=max(10, int(self.font_size * 0.68)))
+        self.hint.configure(bg=self.background_color, font=(self.font_name, 9))
+        self.settings_btn.configure(bg=self.background_color)
+        self.close_btn.configure(bg=self.background_color)
+
+        sw = self.root.winfo_screenwidth()
+        self.w = max(320, int(sw * self.width_frac))
+        wrap = max(280, self.w - 40)
+        self.l_prev.configure(fg=self.previous_color, bg=self.background_color, wraplength=wrap)
+        self.l_cur.configure(fg=self.current_color, bg=self.background_color, wraplength=wrap)
+        self.l_trans.configure(fg=self.translation_color, bg=self.background_color, wraplength=wrap)
+
+        for label in (self.l_prev, self.l_cur, self.l_trans):
+            label.pack_forget()
+        if self.show_previous:
+            self.l_prev.pack(side="top", fill="x", pady=(8, 0))
+        self.l_cur.pack(side="top", fill="x", pady=(2, 0))
+        self.l_trans.pack(side="top", fill="x", pady=(0, 10))
+
+        self._relayout(anchor_to_screen=anchor_to_screen, center_x=old_center if keep_center else None)
+        self._render()
+
+    def _settings_changed(self, key=None):
+        if not self._setting_vars:
+            return
+        v = self._setting_vars
+        if key == "asr_model":
+            value = str(v["asr_model"].get()).upper()
+            self.asr_model = value if value in ("Q8_0", "BF16") else "Q8_0"
+            self._schedule_save()
+            return
+        recognition_keys = {
+            "context_enabled", "context_history", "context_chars", "llama_ctx", "slots",
+            "max_tokens", "temperature", "partial_every", "silence", "vad_win",
+            "vad_threshold", "vad_min_speech_ms", "vad_min_silence_ms", "vad_speech_pad_ms",
+            "min_seg", "max_seg", "max_gain",
+        }
+        if key in recognition_keys:
+            try:
+                self.context_enabled = bool(v["context_enabled"].get())
+                self.context_history = max(1, min(5, int(v["context_history"].get())))
+                self.context_chars = max(40, min(1000, int(v["context_chars"].get())))
+                self.llama_ctx = max(2048, min(16384, int(v["llama_ctx"].get())))
+                self.slots = max(1, min(4, int(v["slots"].get())))
+                self.max_tokens = max(64, min(512, int(v["max_tokens"].get())))
+                self.temperature = max(0.0, min(1.0, float(v["temperature"].get())))
+                self.partial_every = max(0.2, min(2.0, float(v["partial_every"].get())))
+                self.silence = max(0.2, min(2.0, float(v["silence"].get())))
+                self.vad_win = max(0.1, min(1.0, float(v["vad_win"].get())))
+                self.vad_threshold = max(0.1, min(0.9, float(v["vad_threshold"].get())))
+                self.vad_min_speech_ms = max(50, min(1000, int(v["vad_min_speech_ms"].get())))
+                self.vad_min_silence_ms = max(50, min(2000, int(v["vad_min_silence_ms"].get())))
+                self.vad_speech_pad_ms = max(0, min(1000, int(v["vad_speech_pad_ms"].get())))
+                self.min_seg = max(0.2, min(5.0, float(v["min_seg"].get())))
+                self.max_seg = max(2.0, min(30.0, float(v["max_seg"].get())))
+                self.max_gain = max(1.0, min(100.0, float(v["max_gain"].get())))
+            except (ValueError, TypeError):
+                return
+            if self.max_seg < self.min_seg:
+                self.max_seg = self.min_seg
+                v["max_seg"].set(self.max_seg)
+            self._schedule_save()
+            return
+        try:
+            self.font_name = v["font_name"].get().strip() or self._initial_settings["font_name"]
+            self.font_size = max(12, min(80, int(round(v["font_size"].get()))))
+            self.alpha = max(0.20, min(1.0, float(v["alpha"].get())))
+            self.width_frac = max(0.30, min(1.0, float(v["width_frac"].get())))
+            self.bottom = max(0, min(500, int(round(v["bottom"].get()))))
+            self.hold = max(1.0, min(20.0, float(v["hold"].get())))
+            self.topmost = bool(v["topmost"].get())
+            self.show_previous = bool(v["show_previous"].get())
+            self.current_bold = bool(v["current_bold"].get())
+        except (ValueError, TypeError):
+            return
+        self._apply_style(anchor_to_screen=(key == "bottom"), keep_center=(key == "width_frac"))
+        self._schedule_save()
+
+    def _choose_color(self, key, title):
+        from tkinter import colorchooser
+        current = getattr(self, key)
+        chosen = colorchooser.askcolor(color=current, parent=self.settings_win, title=title)[1]
+        if not chosen:
+            return
+        setattr(self, key, chosen)
+        button = getattr(self, f"_color_btn_{key}", None)
+        if button is not None:
+            button.configure(bg=chosen)
+        self._apply_style()
+        self._schedule_save()
+
+    def _reset_settings(self):
+        if not self._setting_vars:
+            return
+        d = self._initial_settings
+        for key in ("asr_model", "context_enabled", "context_history", "context_chars", "llama_ctx", "slots",
+                    "max_tokens", "temperature", "partial_every", "silence", "vad_win", "vad_threshold",
+                    "vad_min_speech_ms", "vad_min_silence_ms", "vad_speech_pad_ms", "min_seg", "max_seg",
+                    "max_gain", "font_name", "font_size", "alpha", "width_frac", "bottom", "hold",
+                    "topmost", "show_previous", "current_bold"):
+            self._setting_vars[key].set(d[key])
+        for key in ("current_color", "translation_color", "previous_color", "background_color"):
+            setattr(self, key, d[key])
+            button = getattr(self, f"_color_btn_{key}", None)
+            if button is not None:
+                button.configure(bg=d[key])
+        self.window_height = 0
+        self._settings_changed("partial_every")
+        self._settings_changed("asr_model")
+        self._settings_changed("bottom")
+
+    def _apply_accuracy_preset(self):
+        if not self._setting_vars:
+            return
+        preset = {
+            "asr_model": "Q8_0",
+            "context_enabled": False,
+            "context_history": 1,
+            "context_chars": 80,
+            "llama_ctx": 4096,
+            "slots": 2,
+            "max_tokens": 256,
+            "temperature": 0.0,
+            "partial_every": 0.6,
+            "silence": 0.80,
+            "vad_win": 0.20,
+            "vad_threshold": 0.10,
+            "vad_min_speech_ms": 100,
+            "vad_min_silence_ms": 100,
+            "vad_speech_pad_ms": 200,
+            "min_seg": 1.2,
+            "max_seg": 12.0,
+            "max_gain": 60.0,
+        }
+        for key, value in preset.items():
+            self._setting_vars[key].set(value)
+        self._settings_changed("partial_every")
+        self._settings_changed("asr_model")
+
+    def _close_asr_settings(self):
+        if self.asr_settings_win is not None:
+            try:
+                self.asr_settings_win.destroy()
+            except Exception:
+                pass
+        self.asr_settings_win = None
+
+    def _open_asr_settings(self):
+        from tkinter import ttk
+        if not self._setting_vars:
+            return
+        if self.asr_settings_win is not None:
+            try:
+                if self.asr_settings_win.winfo_exists():
+                    self.asr_settings_win.deiconify()
+                    self.asr_settings_win.lift()
+                    self.asr_settings_win.focus_force()
+                    return
+            except Exception:
+                pass
+
+        win = self.tk.Toplevel(self.settings_win or self.root)
+        self.asr_settings_win = win
+        win.title("识别参数")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.protocol("WM_DELETE_WINDOW", self._close_asr_settings)
+        v = self._setting_vars
+
+        outer = self.tk.Frame(win, padx=12, pady=10)
+        outer.pack(fill="both", expand=True)
+
+        def add_field(parent, row, col, label, key, start, end, increment):
+            self.tk.Label(parent, text=label).grid(row=row, column=col * 2, sticky="w", padx=(0, 6), pady=4)
+            box = self.tk.Spinbox(parent, from_=start, to=end, increment=increment, textvariable=v[key],
+                                  width=9, command=lambda k=key: self._settings_changed(k))
+            box.grid(row=row, column=col * 2 + 1, sticky="w", padx=(0, 14), pady=4)
+            box.bind("<Return>", lambda e, k=key: self._settings_changed(k))
+            box.bind("<FocusOut>", lambda e, k=key: self._settings_changed(k))
+
+        context_frame = ttk.LabelFrame(outer, text="上下文 / llama")
+        context_frame.pack(fill="x", pady=(0, 8))
+        self.tk.Checkbutton(context_frame, text="启用前文上下文", variable=v["context_enabled"],
+                            command=lambda: self._settings_changed("context_enabled")).grid(
+                                row=0, column=0, columnspan=4, sticky="w", padx=8, pady=(6, 2))
+        add_field(context_frame, 1, 0, "保留 final 句数", "context_history", 1, 5, 1)
+        add_field(context_frame, 1, 1, "最多字符数", "context_chars", 40, 1000, 20)
+        add_field(context_frame, 2, 0, "llama ctx 总长度", "llama_ctx", 2048, 16384, 1024)
+        add_field(context_frame, 2, 1, "并行 slots", "slots", 1, 4, 1)
+        add_field(context_frame, 3, 0, "最大输出 tokens", "max_tokens", 64, 512, 16)
+        add_field(context_frame, 3, 1, "temperature", "temperature", 0.0, 1.0, 0.05)
+
+        vad_frame = ttk.LabelFrame(outer, text="VAD")
+        vad_frame.pack(fill="x", pady=(0, 8))
+        add_field(vad_frame, 0, 0, "阈值", "vad_threshold", 0.1, 0.9, 0.05)
+        add_field(vad_frame, 0, 1, "检测窗口 (s)", "vad_win", 0.1, 1.0, 0.05)
+        add_field(vad_frame, 1, 0, "最短语音 (ms)", "vad_min_speech_ms", 50, 1000, 50)
+        add_field(vad_frame, 1, 1, "最短静音 (ms)", "vad_min_silence_ms", 50, 2000, 50)
+        add_field(vad_frame, 2, 0, "语音 padding (ms)", "vad_speech_pad_ms", 0, 1000, 50)
+
+        segment_frame = ttk.LabelFrame(outer, text="切句 / 实时性")
+        segment_frame.pack(fill="x", pady=(0, 8))
+        add_field(segment_frame, 0, 0, "partial 刷新 (s)", "partial_every", 0.2, 2.0, 0.05)
+        add_field(segment_frame, 0, 1, "句尾静音 (s)", "silence", 0.2, 2.0, 0.05)
+        add_field(segment_frame, 1, 0, "最短句段 (s)", "min_seg", 0.2, 5.0, 0.1)
+        add_field(segment_frame, 1, 1, "最长句段 (s)", "max_seg", 2.0, 30.0, 0.5)
+        add_field(segment_frame, 2, 0, "自动增益上限", "max_gain", 1.0, 100.0, 1.0)
+
+        note = self.tk.Label(
+            outer,
+            text="这些参数会自动保存，并在下一次启动字幕程序时生效。命令行显式参数仍然优先。",
+            fg="#666666", anchor="w",
+        )
+        note.pack(fill="x", pady=(2, 8))
+        buttons = self.tk.Frame(outer)
+        buttons.pack(fill="x")
+        self.tk.Button(buttons, text="高精度推荐", command=self._apply_accuracy_preset, width=12).pack(side="left")
+        self.tk.Button(buttons, text="关闭", command=self._close_asr_settings, width=10).pack(side="right")
+
+        win.update_idletasks()
+        x = max(20, self.settings_win.winfo_x() - win.winfo_width() - 12) if self.settings_win else 20
+        y = max(20, self.settings_win.winfo_y()) if self.settings_win else 20
+        win.geometry(f"+{x}+{y}")
+        win.lift()
+
+    def _close_settings(self):
+        self._save_settings()
+        self._close_asr_settings()
+        if self.settings_win is not None:
+            try:
+                self.settings_win.destroy()
+            except Exception:
+                pass
+        self.settings_win = None
+        self._setting_vars = None
+
+    def open_settings(self):
+        import tkinter.font as tkfont
+        from tkinter import ttk
+
+        if self.settings_win is not None:
+            try:
+                if self.settings_win.winfo_exists():
+                    self.settings_win.deiconify()
+                    self.settings_win.lift()
+                    self.settings_win.focus_force()
+                    return
+            except Exception:
+                pass
+
+        win = self.tk.Toplevel(self.root)
+        self.settings_win = win
+        win.title("字幕设置")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.protocol("WM_DELETE_WINDOW", self._close_settings)
+
+        v = {
+            "asr_model": self.tk.StringVar(value=self.asr_model),
+            "context_enabled": self.tk.BooleanVar(value=self.context_enabled),
+            "context_history": self.tk.IntVar(value=self.context_history),
+            "context_chars": self.tk.IntVar(value=self.context_chars),
+            "llama_ctx": self.tk.IntVar(value=self.llama_ctx),
+            "slots": self.tk.IntVar(value=self.slots),
+            "max_tokens": self.tk.IntVar(value=self.max_tokens),
+            "temperature": self.tk.DoubleVar(value=self.temperature),
+            "partial_every": self.tk.DoubleVar(value=self.partial_every),
+            "silence": self.tk.DoubleVar(value=self.silence),
+            "vad_win": self.tk.DoubleVar(value=self.vad_win),
+            "vad_threshold": self.tk.DoubleVar(value=self.vad_threshold),
+            "vad_min_speech_ms": self.tk.IntVar(value=self.vad_min_speech_ms),
+            "vad_min_silence_ms": self.tk.IntVar(value=self.vad_min_silence_ms),
+            "vad_speech_pad_ms": self.tk.IntVar(value=self.vad_speech_pad_ms),
+            "min_seg": self.tk.DoubleVar(value=self.min_seg),
+            "max_seg": self.tk.DoubleVar(value=self.max_seg),
+            "max_gain": self.tk.DoubleVar(value=self.max_gain),
+            "font_name": self.tk.StringVar(value=self.font_name),
+            "font_size": self.tk.DoubleVar(value=self.font_size),
+            "alpha": self.tk.DoubleVar(value=self.alpha),
+            "width_frac": self.tk.DoubleVar(value=self.width_frac),
+            "bottom": self.tk.DoubleVar(value=self.bottom),
+            "hold": self.tk.DoubleVar(value=self.hold),
+            "topmost": self.tk.BooleanVar(value=self.topmost),
+            "show_previous": self.tk.BooleanVar(value=self.show_previous),
+            "current_bold": self.tk.BooleanVar(value=self.current_bold),
+        }
+        self._setting_vars = v
+
+        frame = self.tk.Frame(win, padx=14, pady=12)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(1, weight=1)
+
+        row = 0
+        self.tk.Label(frame, text="ASR 主模型").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=5)
+        model_holder = self.tk.Frame(frame)
+        model_holder.grid(row=row, column=1, sticky="ew", pady=5)
+        model_box = ttk.Combobox(model_holder, textvariable=v["asr_model"],
+                                 values=("Q8_0", "BF16"), width=12, state="readonly")
+        model_box.pack(side="left")
+        model_box.bind("<<ComboboxSelected>>", lambda e: self._settings_changed("asr_model"))
+        models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+        q8_ok = os.path.isfile(os.path.join(models_dir, "Qwen3-ASR-1.7B-Q8_0.gguf"))
+        bf16_ok = os.path.isfile(os.path.join(models_dir, "Qwen3-ASR-1.7B-bf16.gguf"))
+        availability = f"Q8_0 {'✓' if q8_ok else '✗'}   BF16 {'✓' if bf16_ok else '✗'}"
+        self.tk.Label(model_holder, text=availability, fg="#666666").pack(side="left", padx=(10, 0))
+        row += 1
+
+        self.tk.Label(frame, text="识别参数").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=5)
+        self.tk.Button(frame, text="VAD / 切句 / 上下文…", command=self._open_asr_settings,
+                       width=22).grid(row=row, column=1, sticky="w", pady=5)
+        row += 1
+
+        self.tk.Label(frame, text="字体").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=5)
+        fonts = sorted(set(tkfont.families()))
+        font_box = ttk.Combobox(frame, textvariable=v["font_name"], values=fonts, width=29)
+        font_box.grid(row=row, column=1, sticky="ew", pady=5)
+        font_box.bind("<<ComboboxSelected>>", lambda e: self._settings_changed("font_name"))
+        font_box.bind("<Return>", lambda e: self._settings_changed("font_name"))
+        row += 1
+
+        def add_scale(label, key, start, end, resolution, display):
+            nonlocal row
+            self.tk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=4)
+            holder = self.tk.Frame(frame)
+            holder.grid(row=row, column=1, sticky="ew", pady=4)
+            scale = self.tk.Scale(holder, from_=start, to=end, resolution=resolution, orient="horizontal",
+                                  showvalue=False, variable=v[key], length=230,
+                                  command=lambda _value, k=key: (value_label.configure(text=display(v[k].get())),
+                                                                 self._settings_changed(k)))
+            scale.pack(side="left", fill="x", expand=True)
+            value_label = self.tk.Label(holder, width=8, anchor="e", text=display(v[key].get()))
+            value_label.pack(side="right")
+            row += 1
+
+        add_scale("字号", "font_size", 12, 80, 1, lambda x: f"{int(round(x))} pt")
+        add_scale("窗口透明度", "alpha", 0.20, 1.00, 0.01, lambda x: f"{int(round(x * 100))}%")
+        add_scale("窗口宽度", "width_frac", 0.30, 1.00, 0.01, lambda x: f"{int(round(x * 100))}%")
+        add_scale("距屏幕底部", "bottom", 0, 500, 5, lambda x: f"{int(round(x))} px")
+        add_scale("字幕停留时间", "hold", 1.0, 20.0, 0.5, lambda x: f"{x:.1f} s")
+
+        for label, key in (
+            ("当前日语颜色", "current_color"),
+            ("中文翻译颜色", "translation_color"),
+            ("上一句颜色", "previous_color"),
+            ("背景颜色", "background_color"),
+        ):
+            self.tk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=4)
+            btn = self.tk.Button(frame, text="选择颜色", width=12, bg=getattr(self, key),
+                                 command=lambda k=key, t=label: self._choose_color(k, t))
+            btn.grid(row=row, column=1, sticky="w", pady=4)
+            setattr(self, f"_color_btn_{key}", btn)
+            row += 1
+
+        checks = self.tk.Frame(frame)
+        checks.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 4))
+        self.tk.Checkbutton(checks, text="窗口始终置顶", variable=v["topmost"],
+                            command=lambda: self._settings_changed("topmost")).pack(side="left")
+        self.tk.Checkbutton(checks, text="显示上一句", variable=v["show_previous"],
+                            command=lambda: self._settings_changed("show_previous")).pack(side="left", padx=(12, 0))
+        self.tk.Checkbutton(checks, text="当前字幕粗体", variable=v["current_bold"],
+                            command=lambda: self._settings_changed("current_bold")).pack(side="left", padx=(12, 0))
+        row += 1
+
+        note = self.tk.Label(frame, text="字幕外观即时预览；模型和识别参数在下次启动生效。设置会自动保存。",
+                             fg="#666666", anchor="w")
+        note.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 4))
+        row += 1
+
+        buttons = self.tk.Frame(frame)
+        buttons.grid(row=row, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        self.tk.Button(buttons, text="恢复默认", command=self._reset_settings, width=10).pack(side="left", padx=(0, 8))
+        self.tk.Button(buttons, text="保存并关闭", command=self._close_settings, width=12).pack(side="left")
+
+        win.update_idletasks()
+        x = self.root.winfo_x() + max(0, (self.root.winfo_width() - win.winfo_width()) // 2)
+        y = max(20, self.root.winfo_y() - win.winfo_height() - 12)
+        win.geometry(f"+{x}+{y}")
+        win.lift()
+
     # ---- 布局 ----
-    def _relayout(self, first=False):
-        # 高度按真实字体行高算：上一行 1 行 + 当前行最多 2 行（自动换行）
-        h = (self.f_prev.metrics("linespace") + self.f_cur.metrics("linespace") * 2
-             + self.f_trans.metrics("linespace") * 2 + 34)
+    def _relayout(self, first=False, anchor_to_screen=False, center_x=None):
+        # 默认按真实字体行高自动计算；用户拖动上下边缘后优先保留手动高度。
+        auto_h = ((self.f_prev.metrics("linespace") if self.show_previous else 0) + self.f_cur.metrics("linespace") * 2
+                  + self.f_trans.metrics("linespace") * 2 + 34)
+        h = self.window_height if self.window_height > 0 else auto_h
         if first:
             x = (self.root.winfo_screenwidth() - self.w) // 2
             y = self.sh - h - self.bottom
             self.root.geometry(f"{self.w}x{h}+{x}+{y}")
+        elif anchor_to_screen:
+            x = self.root.winfo_x()
+            y = self.root.winfo_screenheight() - h - self.bottom
+            self.root.geometry(f"{self.w}x{h}+{x}+{max(0, y)}")
         else:
             # 保持底边不动
             y_bottom = self.root.winfo_y() + self.root.winfo_height()
-            self.root.geometry(f"{self.w}x{h}+{self.root.winfo_x()}+{y_bottom - h}")
+            x = self.root.winfo_x()
+            if center_x is not None:
+                x = int(center_x - self.w / 2)
+                x = max(0, min(self.root.winfo_screenwidth() - self.w, x))
+            self.root.geometry(f"{self.w}x{h}+{x}+{y_bottom - h}")
         self.h = h
 
+    def _resize_edge_at(self, e):
+        margin = 9
+        rx = e.x_root - self.root.winfo_rootx()
+        ry = e.y_root - self.root.winfo_rooty()
+        w = max(1, self.root.winfo_width())
+        h = max(1, self.root.winfo_height())
+        edge = ""
+        if rx <= margin:
+            edge += "w"
+        elif rx >= w - margin:
+            edge += "e"
+        if ry <= margin:
+            edge += "n"
+        elif ry >= h - margin:
+            edge += "s"
+        return edge
+
+    def _resize_cursor(self, e):
+        edge = self._resize_edge_at(e)
+        cursor = "sizing" if len(edge) == 2 else (
+            "sb_h_double_arrow" if edge in ("w", "e") else
+            "sb_v_double_arrow" if edge in ("n", "s") else ""
+        )
+        try:
+            e.widget.configure(cursor=cursor)
+        except Exception:
+            pass
+
     def _drag_start(self, e):
+        self._resize_edge = self._resize_edge_at(e)
+        if self._resize_edge:
+            self._resize_origin = (
+                e.x_root, e.y_root,
+                self.root.winfo_x(), self.root.winfo_y(),
+                self.root.winfo_width(), self.root.winfo_height(),
+            )
+            return
         self._dx, self._dy = e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y()
 
     def _drag_move(self, e):
-        self.root.geometry(f"+{e.x_root - self._dx}+{e.y_root - self._dy}")
+        edge = getattr(self, "_resize_edge", "")
+        if not edge:
+            self.root.geometry(f"+{e.x_root - self._dx}+{e.y_root - self._dy}")
+            return
+
+        sx, sy, x0, y0, w0, h0 = self._resize_origin
+        dx, dy = e.x_root - sx, e.y_root - sy
+        min_w = max(320, int(self.root.winfo_screenwidth() * 0.30))
+        min_h = 80
+        x, y, w, h = x0, y0, w0, h0
+
+        if "e" in edge:
+            w = max(min_w, w0 + dx)
+        elif "w" in edge:
+            w = max(min_w, w0 - dx)
+            x = x0 + (w0 - w)
+
+        if "s" in edge:
+            h = max(min_h, h0 + dy)
+        elif "n" in edge:
+            h = max(min_h, h0 - dy)
+            y = y0 + (h0 - h)
+
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self.w, self.h = w, h
+        self.width_frac = max(0.30, min(1.0, w / self.root.winfo_screenwidth()))
+        self.window_height = h
+        wrap = max(280, w - 40)
+        for label in (self.l_prev, self.l_cur, self.l_trans):
+            label.configure(wraplength=wrap)
+        if self._setting_vars:
+            self._setting_vars["width_frac"].set(self.width_frac)
+
+    def _drag_end(self, e):
+        if getattr(self, "_resize_edge", ""):
+            self._resize_edge = ""
+            self._schedule_save()
 
     def _wheel(self, e):
         self.font_size = max(12, min(80, self.font_size + (2 if e.delta > 0 else -2)))
-        self.f_cur.configure(size=self.font_size)
-        self.f_trans.configure(size=max(12, int(self.font_size * 0.82)))
-        self.f_prev.configure(size=max(10, int(self.font_size * 0.68)))
-        self._relayout()
+        if self._setting_vars:
+            self._setting_vars["font_size"].set(self.font_size)
+        self._apply_style()
+        self._schedule_save()
 
     # ---- 识别线程调用 ----
     def partial(self, text):
@@ -355,7 +999,7 @@ class OverlaySink:
             cur = self.finals[-1] if self.finals else ""
             prev = self.finals[-2] if len(self.finals) > 1 else ""
         translated = self.translation_text
-        self.l_prev.configure(text=prev)
+        self.l_prev.configure(text=prev if self.show_previous else "")
         self.l_cur.configure(text=cur)
         self.l_trans.configure(text=translated)
 
@@ -389,6 +1033,13 @@ class OverlaySink:
     def close(self):
         if not self.closed:
             self.closed = True
+            self._save_settings()
+            self._close_asr_settings()
+            if self.settings_win is not None:
+                try:
+                    self.settings_win.destroy()
+                except Exception:
+                    pass
             try:
                 self.root.destroy()
             except Exception:
@@ -645,13 +1296,18 @@ class LlamaBackend:
     """llama.cpp llama-server (b10941+ 支持 Qwen3-ASR 的 mtmd 音频)。"""
     name = "llama.cpp"
 
-    def __init__(self, server_exe, model, mmproj, lang, hotwords, use_context, port=8765, url=None, slots=2):
+    def __init__(self, server_exe, model, mmproj, lang, hotwords, use_context, port=8765, url=None, slots=2,
+                 ctx_size=8192, context_history=1, context_chars=80, max_tokens=200, temperature=0.0):
         import subprocess, urllib.request, socket, json
         self.urllib = urllib.request
         self.lang = QWEN_LANG.get(lang, lang) if lang else None
         self.hot = hotwords or ""
         self.use_context = use_context
-        self.last = ""
+        self.context_history = max(1, int(context_history))
+        self.context_chars = max(40, int(context_chars))
+        self.max_tokens = max(64, int(max_tokens))
+        self.temperature = max(0.0, min(1.0, float(temperature)))
+        self.history = []
         self.proc = None
         self.job = None
         if url is None:
@@ -666,7 +1322,7 @@ class LlamaBackend:
                         sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
                 self.url = f"http://127.0.0.1:{port}"
                 cmd = [server_exe, "-m", model, "--mmproj", mmproj, "-ngl", "99", "--port", str(port),
-                       "-c", "8192", "--no-webui", "-np", str(slots), "--log-disable"]
+                       "-c", str(ctx_size), "--no-webui", "-np", str(slots), "--log-disable"]
                 self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 self._bind_job(self.proc)
@@ -730,10 +1386,20 @@ class LlamaBackend:
         except Exception as e:
             print("Job Object 绑定失败（server 可能不会随程序退出）:", e)
 
+    def add_context(self, text):
+        if text:
+            self.history = (self.history + [text])[-self.context_history:]
+
+    def _context_text(self):
+        if not self.use_context or not self.history:
+            return ""
+        return "\n".join(self.history)[-self.context_chars:]
+
     def _prompt(self):
         ctx = self.hot
-        if self.use_context and self.last:
-            ctx = (ctx + "\n" + self.last[-80:]).strip()
+        history = self._context_text()
+        if history:
+            ctx = (ctx + "\n" + history).strip()
         p = ("<|im_start|>system\n" + ctx + "<|im_end|>\n"
              "<|im_start|>user\n<|audio_start|><__media__><|audio_end|><|im_end|>\n"
              "<|im_start|>assistant\n")
@@ -756,12 +1422,14 @@ class LlamaBackend:
     def transcribe(self, audio):
         import json
         ctx = self.hot
-        if self.use_context and self.last:
-            ctx = (ctx + "\n" + self.last[-80:]).strip()
+        history = self._context_text()
+        if history:
+            ctx = (ctx + "\n" + history).strip()
         msgs = [{"role": "system", "content": ctx},
                 {"role": "user", "content": [{"type": "input_audio",
                                               "input_audio": {"data": self._wav_b64(audio), "format": "wav"}}]}]
-        body = json.dumps({"messages": msgs, "max_tokens": 200, "temperature": 0.0, "cache_prompt": True}).encode()
+        body = json.dumps({"messages": msgs, "max_tokens": self.max_tokens,
+                           "temperature": self.temperature, "cache_prompt": True}).encode()
         req = self.urllib.Request(self.url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
         with self.urllib.urlopen(req, timeout=60) as r:
             out = json.loads(r.read().decode())
@@ -855,7 +1523,9 @@ def run_asr(args, sink, stop, status=None):
     print(f"加载模型 {os.path.basename(model)} (llama.cpp) …", flush=True)
     if status:
         status("加载模型 (llama.cpp) …")
-    be = LlamaBackend(args.llama_server, model, mmproj, args.lang, hot, args.context, args.llama_port, args.llama_url, args.slots)
+    be = LlamaBackend(args.llama_server, model, mmproj, args.lang, hot, args.context,
+                      args.llama_port, args.llama_url, args.slots, args.ctx_size,
+                      args.context_history, args.context_chars, args.max_tokens, args.temperature)
     get_vad_model()
     be.warmup()
     print(f"模型就绪 {time.time() - t:.1f}s。开始监听。\n", flush=True)
@@ -900,7 +1570,7 @@ def run_asr(args, sink, stop, status=None):
             t1 = time.time()
             last_final_seg[0] = job["seg"]
             if text:
-                be.last = text
+                be.add_context(text)
                 sink.final(text, job["t_start"], job["t_end"])
             log_dbg(job, text, t0, t1, reused)
 
@@ -939,7 +1609,10 @@ def run_asr(args, sink, stop, status=None):
                 partial_slot[0] = job
             cv.notify_all()
 
-    vad_opts = VadOptions(threshold=0.45, min_speech_duration_ms=100, min_silence_duration_ms=200, speech_pad_ms=100)
+    vad_opts = VadOptions(threshold=args.vad_threshold,
+                          min_speech_duration_ms=args.vad_min_speech_ms,
+                          min_silence_duration_ms=args.vad_min_silence_ms,
+                          speech_pad_ms=args.vad_speech_pad_ms)
     audio_q = queue.Queue()
     stream = start_capture(pa, dev, audio_q, stop)
 
@@ -1037,9 +1710,18 @@ def main():
     ap.add_argument("--hotwords", default=None, help="逗号分隔的专有名词，如 'BLG,T1,峡谷先锋'")
     ap.add_argument("--hotwords-file", default=None, help="热词文件（默认读脚本旁边的 hotwords.txt，每行/逗号分隔，# 注释）")
     ap.add_argument("--no-context", dest="context", action="store_false", help="不把上一句喂给模型当上下文")
+    ap.add_argument("--context-history", type=int, default=1, help="作为上下文保留的最终字幕句数")
+    ap.add_argument("--context-chars", type=int, default=80, help="上下文最多保留多少字符")
+    ap.add_argument("--ctx-size", type=int, default=8192, help="llama-server 总 context size")
+    ap.add_argument("--max-tokens", type=int, default=200, help="单次 ASR 最大输出 token 数")
+    ap.add_argument("--temperature", type=float, default=0.0, help="ASR 解码温度")
     ap.add_argument("--partial-every", type=float, default=0.4, help="说话中多少秒刷新一次临时结果")
     ap.add_argument("--silence", type=float, default=0.5, help="静音多少秒算一句结束")
     ap.add_argument("--vad-win", type=float, default=0.2, help="VAD 判定窗口秒数（越小句尾反应越快）")
+    ap.add_argument("--vad-threshold", type=float, default=0.45, help="Silero VAD 语音阈值")
+    ap.add_argument("--vad-min-speech-ms", type=int, default=100, help="VAD 最短语音毫秒")
+    ap.add_argument("--vad-min-silence-ms", type=int, default=200, help="VAD 最短静音毫秒")
+    ap.add_argument("--vad-speech-pad-ms", type=int, default=100, help="VAD 语音前后 padding 毫秒")
     ap.add_argument("--slots", type=int, default=2, help="llama-server 并行槽位数")
     ap.add_argument("--min-seg", type=float, default=1.0, help="短于这个秒数的句子先不切，等下一段一起")
     ap.add_argument("--max-seg", type=float, default=6.0, help="一句最长多少秒强制切分（一行字幕 20~30 字）")
@@ -1073,6 +1755,57 @@ def main():
         return
 
     overlay = OverlaySink(args.font_size, args.width, args.bottom, args.alpha, 2, args.hold, args.font)
+    def cli_explicit(option):
+        return any(a == option or a.startswith(option + "=") for a in sys.argv[1:])
+
+    setting_args = (
+        ("context_history", "--context-history"),
+        ("context_chars", "--context-chars"),
+        ("ctx_size", "--ctx-size"),
+        ("slots", "--slots"),
+        ("max_tokens", "--max-tokens"),
+        ("temperature", "--temperature"),
+        ("partial_every", "--partial-every"),
+        ("silence", "--silence"),
+        ("vad_win", "--vad-win"),
+        ("vad_threshold", "--vad-threshold"),
+        ("vad_min_speech_ms", "--vad-min-speech-ms"),
+        ("vad_min_silence_ms", "--vad-min-silence-ms"),
+        ("vad_speech_pad_ms", "--vad-speech-pad-ms"),
+        ("min_seg", "--min-seg"),
+        ("max_seg", "--max-seg"),
+        ("max_gain", "--max-gain"),
+    )
+    for attr, option in setting_args:
+        if not cli_explicit(option):
+            source_attr = "llama_ctx" if attr == "ctx_size" else attr
+            setattr(args, attr, getattr(overlay, source_attr))
+    if not cli_explicit("--no-context"):
+        args.context = overlay.context_enabled
+    if args.model is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        model_names = {
+            "Q8_0": "Qwen3-ASR-1.7B-Q8_0.gguf",
+            "BF16": "Qwen3-ASR-1.7B-bf16.gguf",
+        }
+        selected_name = model_names.get(overlay.asr_model, model_names["Q8_0"])
+        selected_path = os.path.join(here, "models", selected_name)
+        if os.path.isfile(selected_path):
+            args.model = selected_path
+        else:
+            fallback = os.path.join(here, "models", model_names["Q8_0"])
+            if overlay.asr_model != "Q8_0" and os.path.isfile(fallback):
+                print(f"所选模型 {selected_name} 不存在，自动回退到 Q8_0。", flush=True)
+                overlay.status("⚠ BF16 不存在，已回退 Q8_0")
+                args.model = fallback
+            else:
+                args.model = selected_path
+    print(f"ASR 主模型: {os.path.basename(args.model)}", flush=True)
+    print(
+        f"识别参数: ctx={args.ctx_size} slots={args.slots} context={args.context_history}句/{args.context_chars}字 "
+        f"VAD={args.vad_threshold:.2f} silence={args.silence:.2f}s seg={args.min_seg:.1f}-{args.max_seg:.1f}s",
+        flush=True,
+    )
     translator = GoogleTranslateSink(overlay, target="zh-CN")
     sink = MultiSink(console, overlay, translator)
 
