@@ -75,6 +75,7 @@ import time
 import threading
 import queue
 import json
+import collections
 from urllib.parse import urlencode
 from urllib.request import urlopen
 from datetime import datetime, timedelta
@@ -220,6 +221,9 @@ class OverlaySink:
             "max_tokens": 200,
             "temperature": 0.0,
             "partial_every": 0.4,
+            "stable_count": 3,
+            "punct_silence": 0.40,
+            "hesitation_silence": 1.10,
             "silence": 0.5,
             "vad_win": 0.2,
             "vad_threshold": 0.45,
@@ -242,6 +246,7 @@ class OverlaySink:
             "background_color": "#000000",
             "topmost": True,
             "show_previous": True,
+            "history_count": 1,
             "current_bold": True,
         }
         cfg = self._load_settings(self._initial_settings)
@@ -272,6 +277,9 @@ class OverlaySink:
         self.max_tokens = number("max_tokens", int, 64, 512)
         self.temperature = number("temperature", float, 0.0, 1.0)
         self.partial_every = number("partial_every", float, 0.2, 2.0)
+        self.stable_count = number("stable_count", int, 2, 5)
+        self.punct_silence = number("punct_silence", float, 0.2, 1.5)
+        self.hesitation_silence = number("hesitation_silence", float, 0.5, 2.5)
         self.silence = number("silence", float, 0.2, 2.0)
         self.vad_win = number("vad_win", float, 0.1, 1.0)
         self.vad_threshold = number("vad_threshold", float, 0.1, 0.9)
@@ -294,12 +302,13 @@ class OverlaySink:
         self.background_color = str(cfg["background_color"])
         self.topmost = flag("topmost")
         self.show_previous = flag("show_previous")
+        self.history_count = number("history_count", int, 0, 5)
         self.current_bold = flag("current_bold")
         self.settings_win = None
         self.asr_settings_win = None
         self._setting_vars = None
         self._settings_save_job = None
-        self.finals = []          # 最近两句最终结果
+        self.finals = []          # 当前 final + 可配置数量的历史 final
         self.partial_text = ""
         self.translation_text = ""
         self.translation_source = ""
@@ -396,6 +405,9 @@ class OverlaySink:
             "max_tokens": self.max_tokens,
             "temperature": round(self.temperature, 3),
             "partial_every": round(self.partial_every, 3),
+            "stable_count": self.stable_count,
+            "punct_silence": round(self.punct_silence, 3),
+            "hesitation_silence": round(self.hesitation_silence, 3),
             "silence": round(self.silence, 3),
             "vad_win": round(self.vad_win, 3),
             "vad_threshold": round(self.vad_threshold, 3),
@@ -418,6 +430,7 @@ class OverlaySink:
             "background_color": self.background_color,
             "topmost": self.topmost,
             "show_previous": self.show_previous,
+            "history_count": self.history_count,
             "current_bold": self.current_bold,
         }
 
@@ -479,7 +492,8 @@ class OverlaySink:
             return
         recognition_keys = {
             "context_enabled", "context_history", "context_chars", "llama_ctx", "slots",
-            "max_tokens", "temperature", "partial_every", "silence", "vad_win",
+            "max_tokens", "temperature", "partial_every", "stable_count",
+            "punct_silence", "hesitation_silence", "silence", "vad_win",
             "vad_threshold", "vad_min_speech_ms", "vad_min_silence_ms", "vad_speech_pad_ms",
             "min_seg", "max_seg", "max_gain",
         }
@@ -493,6 +507,9 @@ class OverlaySink:
                 self.max_tokens = max(64, min(512, int(v["max_tokens"].get())))
                 self.temperature = max(0.0, min(1.0, float(v["temperature"].get())))
                 self.partial_every = max(0.2, min(2.0, float(v["partial_every"].get())))
+                self.stable_count = max(2, min(5, int(v["stable_count"].get())))
+                self.punct_silence = max(0.2, min(1.5, float(v["punct_silence"].get())))
+                self.hesitation_silence = max(0.5, min(2.5, float(v["hesitation_silence"].get())))
                 self.silence = max(0.2, min(2.0, float(v["silence"].get())))
                 self.vad_win = max(0.1, min(1.0, float(v["vad_win"].get())))
                 self.vad_threshold = max(0.1, min(0.9, float(v["vad_threshold"].get())))
@@ -518,6 +535,11 @@ class OverlaySink:
             self.hold = max(1.0, min(20.0, float(v["hold"].get())))
             self.topmost = bool(v["topmost"].get())
             self.show_previous = bool(v["show_previous"].get())
+            self.history_count = max(0, min(5, int(round(v["history_count"].get()))))
+            keep = max(1, self.history_count + 1)
+            self.finals = self.finals[-keep:]
+            if key == "history_count":
+                self.window_height = 0
             self.current_bold = bool(v["current_bold"].get())
         except (ValueError, TypeError):
             return
@@ -542,10 +564,11 @@ class OverlaySink:
             return
         d = self._initial_settings
         for key in ("asr_model", "context_enabled", "context_history", "context_chars", "llama_ctx", "slots",
-                    "max_tokens", "temperature", "partial_every", "silence", "vad_win", "vad_threshold",
+                    "max_tokens", "temperature", "partial_every", "stable_count",
+                    "punct_silence", "hesitation_silence", "silence", "vad_win", "vad_threshold",
                     "vad_min_speech_ms", "vad_min_silence_ms", "vad_speech_pad_ms", "min_seg", "max_seg",
                     "max_gain", "font_name", "font_size", "alpha", "width_frac", "bottom", "hold",
-                    "topmost", "show_previous", "current_bold"):
+                    "topmost", "show_previous", "history_count", "current_bold"):
             self._setting_vars[key].set(d[key])
         for key in ("current_color", "translation_color", "previous_color", "background_color"):
             setattr(self, key, d[key])
@@ -570,6 +593,9 @@ class OverlaySink:
             "max_tokens": 256,
             "temperature": 0.0,
             "partial_every": 0.6,
+            "stable_count": 3,
+            "punct_silence": 0.40,
+            "hesitation_silence": 1.10,
             "silence": 0.80,
             "vad_win": 0.20,
             "vad_threshold": 0.10,
@@ -649,10 +675,13 @@ class OverlaySink:
         segment_frame = ttk.LabelFrame(outer, text="切句 / 实时性")
         segment_frame.pack(fill="x", pady=(0, 8))
         add_field(segment_frame, 0, 0, "partial 刷新 (s)", "partial_every", 0.2, 2.0, 0.05)
-        add_field(segment_frame, 0, 1, "句尾静音 (s)", "silence", 0.2, 2.0, 0.05)
-        add_field(segment_frame, 1, 0, "最短句段 (s)", "min_seg", 0.2, 5.0, 0.1)
-        add_field(segment_frame, 1, 1, "最长句段 (s)", "max_seg", 2.0, 30.0, 0.5)
-        add_field(segment_frame, 2, 0, "自动增益上限", "max_gain", 1.0, 100.0, 1.0)
+        add_field(segment_frame, 0, 1, "Stable 连续次数", "stable_count", 2, 5, 1)
+        add_field(segment_frame, 1, 0, "普通句尾静音 (s)", "silence", 0.2, 2.0, 0.05)
+        add_field(segment_frame, 1, 1, "标点句尾静音 (s)", "punct_silence", 0.2, 1.5, 0.05)
+        add_field(segment_frame, 2, 0, "犹豫词静音 (s)", "hesitation_silence", 0.5, 2.5, 0.05)
+        add_field(segment_frame, 2, 1, "最短句段 (s)", "min_seg", 0.2, 5.0, 0.1)
+        add_field(segment_frame, 3, 0, "最长句段 (s)", "max_seg", 2.0, 30.0, 0.5)
+        add_field(segment_frame, 3, 1, "自动增益上限", "max_gain", 1.0, 100.0, 1.0)
 
         note = self.tk.Label(
             outer,
@@ -713,6 +742,9 @@ class OverlaySink:
             "max_tokens": self.tk.IntVar(value=self.max_tokens),
             "temperature": self.tk.DoubleVar(value=self.temperature),
             "partial_every": self.tk.DoubleVar(value=self.partial_every),
+            "stable_count": self.tk.IntVar(value=self.stable_count),
+            "punct_silence": self.tk.DoubleVar(value=self.punct_silence),
+            "hesitation_silence": self.tk.DoubleVar(value=self.hesitation_silence),
             "silence": self.tk.DoubleVar(value=self.silence),
             "vad_win": self.tk.DoubleVar(value=self.vad_win),
             "vad_threshold": self.tk.DoubleVar(value=self.vad_threshold),
@@ -730,6 +762,7 @@ class OverlaySink:
             "hold": self.tk.DoubleVar(value=self.hold),
             "topmost": self.tk.BooleanVar(value=self.topmost),
             "show_previous": self.tk.BooleanVar(value=self.show_previous),
+            "history_count": self.tk.DoubleVar(value=self.history_count),
             "current_bold": self.tk.BooleanVar(value=self.current_bold),
         }
         self._setting_vars = v
@@ -785,11 +818,12 @@ class OverlaySink:
         add_scale("窗口宽度", "width_frac", 0.30, 1.00, 0.01, lambda x: f"{int(round(x * 100))}%")
         add_scale("距屏幕底部", "bottom", 0, 500, 5, lambda x: f"{int(round(x))} px")
         add_scale("字幕停留时间", "hold", 1.0, 20.0, 0.5, lambda x: f"{x:.1f} s")
+        add_scale("历史字幕数量", "history_count", 0, 5, 1, lambda x: f"{int(round(x))} 句")
 
         for label, key in (
             ("当前日语颜色", "current_color"),
             ("中文翻译颜色", "translation_color"),
-            ("上一句颜色", "previous_color"),
+            ("历史字幕颜色", "previous_color"),
             ("背景颜色", "background_color"),
         ):
             self.tk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=4)
@@ -803,7 +837,7 @@ class OverlaySink:
         checks.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 4))
         self.tk.Checkbutton(checks, text="窗口始终置顶", variable=v["topmost"],
                             command=lambda: self._settings_changed("topmost")).pack(side="left")
-        self.tk.Checkbutton(checks, text="显示上一句", variable=v["show_previous"],
+        self.tk.Checkbutton(checks, text="显示历史字幕", variable=v["show_previous"],
                             command=lambda: self._settings_changed("show_previous")).pack(side="left", padx=(12, 0))
         self.tk.Checkbutton(checks, text="当前字幕粗体", variable=v["current_bold"],
                             command=lambda: self._settings_changed("current_bold")).pack(side="left", padx=(12, 0))
@@ -828,7 +862,8 @@ class OverlaySink:
     # ---- 布局 ----
     def _relayout(self, first=False, anchor_to_screen=False, center_x=None):
         # 默认按真实字体行高自动计算；用户拖动上下边缘后优先保留手动高度。
-        auto_h = ((self.f_prev.metrics("linespace") if self.show_previous else 0) + self.f_cur.metrics("linespace") * 2
+        history_lines = self.history_count if self.show_previous else 0
+        auto_h = (self.f_prev.metrics("linespace") * history_lines + self.f_cur.metrics("linespace") * 2
                   + self.f_trans.metrics("linespace") * 2 + 34)
         h = self.window_height if self.window_height > 0 else auto_h
         if first:
@@ -917,8 +952,8 @@ class OverlaySink:
         self.width_frac = max(0.30, min(1.0, w / self.root.winfo_screenwidth()))
         self.window_height = h
         wrap = max(280, w - 40)
-        for label in (self.l_prev, self.l_cur, self.l_trans):
-            label.configure(wraplength=wrap)
+        self.l_prev.configure(wraplength=wrap)
+        self.l_trans.configure(wraplength=wrap)
         if self._setting_vars:
             self._setting_vars["width_frac"].set(self.width_frac)
 
@@ -981,7 +1016,8 @@ class OverlaySink:
             else:
                 if text:
                     self.caption_seen = True
-                    self.finals = (self.finals + [text])[-2:]
+                    keep = max(1, self.history_count + 1)
+                    self.finals = (self.finals + [text])[-keep:]
                 self.partial_text = ""
             self.last_update = time.time()
         if changed:
@@ -994,11 +1030,16 @@ class OverlaySink:
 
     def _render(self):
         if self.partial_text:
-            cur, prev = self.partial_text, (self.finals[-1] if self.finals else "")
+            cur = self.partial_text
+            history = self.finals[-self.history_count:] if self.history_count > 0 else []
         else:
             cur = self.finals[-1] if self.finals else ""
-            prev = self.finals[-2] if len(self.finals) > 1 else ""
+            if self.history_count > 0 and len(self.finals) > 1:
+                history = self.finals[-(self.history_count + 1):-1]
+            else:
+                history = []
         translated = self.translation_text
+        prev = "\n".join(history)
         self.l_prev.configure(text=prev if self.show_previous else "")
         self.l_cur.configure(text=cur)
         self.l_trans.configure(text=translated)
@@ -1281,6 +1322,14 @@ class MultiSink:
         for s in self.sinks:
             s.partial(text)
 
+    def partial_stable(self, text, stable):
+        for s in self.sinks:
+            fn = getattr(s, "partial_stable", None)
+            if fn:
+                fn(text, stable)
+            else:
+                s.partial(text)
+
     def final(self, text, a, b):
         for s in self.sinks:
             s.final(text, a, b)
@@ -1321,8 +1370,11 @@ class LlamaBackend:
                     with socket.socket() as sk:
                         sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
                 self.url = f"http://127.0.0.1:{port}"
+                # 实时 ASR 每个音频 prompt 都不同；llama-server 默认 8 GiB host prompt cache
+                # 会持续填满主机内存而几乎无法复用，因此显式关闭。
                 cmd = [server_exe, "-m", model, "--mmproj", mmproj, "-ngl", "99", "--port", str(port),
-                       "-c", str(ctx_size), "--no-webui", "-np", str(slots), "--log-disable"]
+                       "-c", str(ctx_size), "--no-webui", "-np", str(slots),
+                       "--cache-ram", "0", "--no-cache-prompt", "--log-disable"]
                 self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 self._bind_job(self.proc)
@@ -1428,8 +1480,9 @@ class LlamaBackend:
         msgs = [{"role": "system", "content": ctx},
                 {"role": "user", "content": [{"type": "input_audio",
                                               "input_audio": {"data": self._wav_b64(audio), "format": "wav"}}]}]
+        # 与 server 侧 --cache-ram 0 保持一致，避免音频请求进入 prompt cache。
         body = json.dumps({"messages": msgs, "max_tokens": self.max_tokens,
-                           "temperature": self.temperature, "cache_prompt": True}).encode()
+                           "temperature": self.temperature, "cache_prompt": False}).encode()
         req = self.urllib.Request(self.url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
         with self.urllib.urlopen(req, timeout=60) as r:
             out = json.loads(r.read().decode())
@@ -1504,9 +1557,85 @@ def _clean(text):
     return text
 
 
+def _common_prefix(texts):
+    texts = [t for t in texts if t]
+    if not texts:
+        return ""
+    prefix = texts[0]
+    for text in texts[1:]:
+        n = min(len(prefix), len(text))
+        i = 0
+        while i < n and prefix[i] == text[i]:
+            i += 1
+        prefix = prefix[:i]
+        if not prefix:
+            break
+    return prefix
+
+
+class _PartialStabilizer:
+    """商业字幕式 provisional/stable 状态：前缀连续多次一致后锁定，尾部继续允许修改。"""
+    def __init__(self, confirm_count=3):
+        self.confirm_count = max(2, int(confirm_count))
+        self.history = collections.deque(maxlen=self.confirm_count)
+        self.stable = ""
+        self.display = ""
+        self.conflicts = 0
+
+    def reset(self):
+        self.history.clear()
+        self.stable = ""
+        self.display = ""
+        self.conflicts = 0
+
+    def update(self, raw_text):
+        candidate = _clean(raw_text)
+        self.history.append(candidate)
+
+        if len(self.history) == self.confirm_count:
+            common = _common_prefix(self.history)
+            if common.startswith(self.stable) and len(common) > len(self.stable):
+                self.stable = common
+
+        # Qwen3-ASR 不是 stateful streaming 模型。单次冲突先抑制，避免字幕抖动；
+        # 如果连续 confirm_count 次都冲突，则认为旧 stable 已过时，允许回退并纠正。
+        if self.stable and not candidate.startswith(self.stable):
+            self.conflicts += 1
+            if self.conflicts < self.confirm_count:
+                return self.display, self.stable
+            self.stable = _common_prefix([self.stable, candidate])
+            self.history.clear()
+            self.history.append(candidate)
+            self.conflicts = 0
+        else:
+            self.conflicts = 0
+
+        self.display = candidate
+        return candidate, self.stable
+
+
+_PUNC_EOS = "。！？?!"
+_HESITATION_ENDINGS = (
+    "あの", "あのー", "えー", "ええと", "えっと", "その", "そのー",
+    "だから", "それで", "でも", "そして", "というか", "なんか",
+)
+
+
+def _endpoint_silence(base_silence, partial_text, punct_silence=0.40, hesitation_silence=1.10):
+    """根据当前 partial 动态调整 speech-final 静音阈值。"""
+    text = (partial_text or "").strip()
+    if not text:
+        return base_silence
+    if text[-1] in _PUNC_EOS:
+        return min(base_silence, punct_silence)
+    stripped = text.rstrip("、，, ")
+    if any(stripped.endswith(x) for x in _HESITATION_ENDINGS):
+        return max(base_silence, hesitation_silence)
+    return base_silence
+
+
 def run_asr(args, sink, stop, status=None):
     from faster_whisper.vad import get_speech_timestamps, VadOptions, get_vad_model
-    import collections
 
     pa = pyaudio.PyAudio()
     dev = get_loopback_device(pa, args.device)
@@ -1533,12 +1662,16 @@ def run_asr(args, sink, stop, status=None):
         status("● 监听中")
     dbg = DebugLog(args.debug) if args.debug else None
 
-    # ---- 两个识别线程：A 只做最终句(按序)，B 只做临时句(只留最新)；server 开了 2 个槽位可并行 ----
+    # ---- 双路径：Final 永远完整重识别；Partial 只留最新并走 full-context + recoverable stable prefix ----
     cv = threading.Condition()
     final_q = collections.deque()
     partial_slot = [None]
     last_final_seg = [-1]
-    partial_done = {}          # seg -> (覆盖到的样本数, 文本)，句尾若无新语音则直接复用，省一次推理
+    active_seg = [0]
+    partial_live = {"seg": -1, "text": "", "stable": "", "updated": 0.0}
+    partial_live_lock = threading.Lock()
+    partial_stabilizer = _PartialStabilizer(getattr(args, "stable_count", 3))
+    stabilizer_seg = [-1]
 
     def log_dbg(job, text, t0, t1, reused=False):
         if not dbg:
@@ -1559,20 +1692,18 @@ def run_asr(args, sink, stop, status=None):
                     return
                 job = final_q.popleft()
             t0 = time.time()
-            reused = job.get("text") is not None
-            if reused:
-                text = job["text"]
-            else:
-                try:
-                    text = be.transcribe(job["audio"])
-                except Exception as e:
-                    print("识别出错:", repr(e), flush=True); continue
+            try:
+                # Final 始终对完整 utterance 做 second pass，不复用 partial。
+                text = be.transcribe(job["audio"])
+            except Exception as e:
+                print("识别出错:", repr(e), flush=True); continue
             t1 = time.time()
             last_final_seg[0] = job["seg"]
             if text:
+                text = _clean(text)
                 be.add_context(text)
                 sink.final(text, job["t_start"], job["t_end"])
-            log_dbg(job, text, t0, t1, reused)
+            log_dbg(job, text, t0, t1, False)
 
     def worker_partial():
         while not stop.is_set():
@@ -1588,20 +1719,29 @@ def run_asr(args, sink, stop, status=None):
             except Exception as e:
                 print("识别出错:", repr(e), flush=True); continue
             t1 = time.time()
-            if job["seg"] <= last_final_seg[0]:
-                continue                          # 这段已经出最终结果了，临时结果作废
-            partial_done[job["seg"]] = (len(job["audio"]), text)
-            if text:
-                sink.partial(text)
-            log_dbg(job, text, t0, t1)
+            if job["seg"] <= last_final_seg[0] or job["seg"] != active_seg[0]:
+                continue                          # final/切句后到达的旧 partial 直接作废
+            if job["seg"] != stabilizer_seg[0]:
+                partial_stabilizer.reset()
+                stabilizer_seg[0] = job["seg"]
+            display, stable = partial_stabilizer.update(text)
+            with partial_live_lock:
+                partial_live.update({"seg": job["seg"], "text": display, "stable": stable, "updated": t1})
+            if display:
+                fn = getattr(sink, "partial_stable", None)
+                if fn:
+                    fn(display, stable)
+                else:
+                    sink.partial(display)
+            log_dbg(job, display, t0, t1)
 
     ths = [threading.Thread(target=worker_final, daemon=True), threading.Thread(target=worker_partial, daemon=True)]
     for th in ths:
         th.start()
 
-    def submit(kind, audio, seg, t_start, t_end, reason=None, text=None):
+    def submit(kind, audio, seg, t_start, t_end, reason=None):
         job = {"kind": kind, "audio": audio, "seg": seg, "t_start": t_start, "t_end": t_end,
-               "t_q": time.time(), "reason": reason, "text": text}
+               "t_q": time.time(), "reason": reason}
         with cv:
             if kind == "final":
                 final_q.append(job)
@@ -1661,24 +1801,36 @@ def run_asr(args, sink, stop, status=None):
 
             seg_len = len(buf) / SR
             sil = now - last_speech
-            # 句子结束：静音够长且句子不太短；或静音很长；或句子太长强制切
+            with partial_live_lock:
+                live_text = partial_live["text"] if partial_live["seg"] == seg_id else ""
+
+            # speech-final 与 stable 分离：标点可更快结束，犹豫/连接词则延长等待。
+            endpoint_silence = _endpoint_silence(
+                args.silence, live_text,
+                getattr(args, "punct_silence", 0.40),
+                getattr(args, "hesitation_silence", 1.10),
+            )
+            hard_silence = max(endpoint_silence * 2.5, args.silence * 2.5)
+
             reason = None
-            if (sil >= args.silence and seg_len >= args.min_seg) or sil >= args.silence * 2.5:
+            if (sil >= endpoint_silence and seg_len >= args.min_seg) or sil >= hard_silence:
                 reason = "silence"
             elif seg_len >= args.max_seg:
                 reason = "maxlen"
             if reason:
-                done = partial_done.pop(seg_id, None)
-                reuse = done[1] if (done and reason == "silence" and done[0] >= speech_samples) else None
-                submit("final", buf, seg_id, seg_start, last_speech, reason, reuse)
+                submit("final", buf.copy(), seg_id, seg_start, last_speech, reason)
                 seg_id += 1
+                active_seg[0] = seg_id
+                with partial_live_lock:
+                    partial_live.update({"seg": seg_id, "text": "", "stable": "", "updated": now})
                 buf = np.zeros(0, dtype=np.float32)
                 seg_start = last_speech = None
             elif not args.no_partial and now - last_partial >= args.partial_every and seg_len >= 1.0:
                 last_partial = now
+                # 非 stateful ASR 使用完整当前 utterance。RTX 3090 的实测性能足以支撑
+                # 0.6s cadence，同时避免 rolling window 无时间戳对齐造成重复/错拼。
                 submit("partial", buf.copy(), seg_id, seg_start, last_speech)
     finally:
-        partial_done.clear()
         stop.set()
         try:
             stream.stop_stream(); stream.close()
@@ -1688,7 +1840,7 @@ def run_asr(args, sink, stop, status=None):
         if len(buf) > SR * 0.5:
             text = be.transcribe(buf)
             if text:
-                sink.final(text, seg_start or time.time(), time.time())
+                sink.final(_clean(text), seg_start or time.time(), time.time())
         for th in ths:
             th.join(timeout=10)
         if hasattr(be, "close"):
@@ -1716,6 +1868,9 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=200, help="单次 ASR 最大输出 token 数")
     ap.add_argument("--temperature", type=float, default=0.0, help="ASR 解码温度")
     ap.add_argument("--partial-every", type=float, default=0.4, help="说话中多少秒刷新一次临时结果")
+    ap.add_argument("--stable-count", type=int, default=3, help="连续多少次 partial 一致后锁定 stable prefix")
+    ap.add_argument("--punct-silence", type=float, default=0.40, help="partial 已有句末标点时的快速句尾静音秒数")
+    ap.add_argument("--hesitation-silence", type=float, default=1.10, help="partial 以犹豫/连接词结尾时的延长静音秒数")
     ap.add_argument("--silence", type=float, default=0.5, help="静音多少秒算一句结束")
     ap.add_argument("--vad-win", type=float, default=0.2, help="VAD 判定窗口秒数（越小句尾反应越快）")
     ap.add_argument("--vad-threshold", type=float, default=0.45, help="Silero VAD 语音阈值")
@@ -1766,6 +1921,9 @@ def main():
         ("max_tokens", "--max-tokens"),
         ("temperature", "--temperature"),
         ("partial_every", "--partial-every"),
+        ("stable_count", "--stable-count"),
+        ("punct_silence", "--punct-silence"),
+        ("hesitation_silence", "--hesitation-silence"),
         ("silence", "--silence"),
         ("vad_win", "--vad-win"),
         ("vad_threshold", "--vad-threshold"),
@@ -1803,7 +1961,9 @@ def main():
     print(f"ASR 主模型: {os.path.basename(args.model)}", flush=True)
     print(
         f"识别参数: ctx={args.ctx_size} slots={args.slots} context={args.context_history}句/{args.context_chars}字 "
-        f"VAD={args.vad_threshold:.2f} silence={args.silence:.2f}s seg={args.min_seg:.1f}-{args.max_seg:.1f}s",
+        f"VAD={args.vad_threshold:.2f} partial={args.partial_every:.2f}s "
+        f"stable={args.stable_count} silence={args.punct_silence:.2f}/{args.silence:.2f}/{args.hesitation_silence:.2f}s "
+        f"seg={args.min_seg:.1f}-{args.max_seg:.1f}s",
         flush=True,
     )
     translator = GoogleTranslateSink(overlay, target="zh-CN")
