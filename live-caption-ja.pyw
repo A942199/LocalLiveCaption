@@ -350,17 +350,21 @@ class OverlaySink:
         self.l_trans.pack(side="top", fill="x", pady=(0, 10))
         self.hint = tk.Label(root, text="拖动=移动  边缘/角=缩放  滚轮=字号  ⚙=设置  Esc=退出",
                              fg="#777777", bg=self.background_color, font=(self.font_name, 9))
-        self.hint.place(relx=1.0, rely=0.0, x=-58, anchor="ne")
-        self.settings_btn = tk.Button(root, text="⚙", command=self.open_settings,
+        self.hint.place(relx=1.0, rely=0.0, x=-86, anchor="ne")
+        self.window_controls = tk.Frame(root, bg=self.background_color, bd=0, highlightthickness=0)
+        self.window_controls.place(relx=1.0, rely=0.0, x=-6, y=2, anchor="ne")
+        self.settings_btn = tk.Button(self.window_controls, text="⚙", command=self.open_settings,
                                       fg="#b0b0b0", bg=self.background_color,
                                       activeforeground="#ffffff", activebackground="#333333", relief="flat",
-                                      bd=0, highlightthickness=0, padx=5, pady=0,
+                                      bd=0, highlightthickness=0, padx=6, pady=0,
                                       font=("Segoe UI Symbol", 11), cursor="hand2")
-        self.settings_btn.place(relx=1.0, rely=0.0, x=-29, y=2, anchor="ne")
-        self.close_btn = tk.Button(root, text="×", command=self.close, fg="#b0b0b0", bg=self.background_color,
+        self.settings_btn.pack(side="left", padx=(0, 8))
+        self.close_btn = tk.Button(self.window_controls, text="×", command=self.close,
+                                   fg="#b0b0b0", bg=self.background_color,
                                    activeforeground="#ffffff", activebackground="#333333", relief="flat",
-                                   bd=0, highlightthickness=0, padx=6, pady=0, font=("Segoe UI", 13, "bold"), cursor="hand2")
-        self.close_btn.place(relx=1.0, rely=0.0, x=-4, y=1, anchor="ne")
+                                   bd=0, highlightthickness=0, padx=6, pady=0,
+                                   font=("Segoe UI", 13, "bold"), cursor="hand2")
+        self.close_btn.pack(side="left")
         root.after(5000, self.hint.place_forget)
         self._relayout(first=True)
 
@@ -461,6 +465,7 @@ class OverlaySink:
         self.f_trans.configure(family=self.font_name, size=max(12, int(self.font_size * 0.82)))
         self.f_prev.configure(family=self.font_name, size=max(10, int(self.font_size * 0.68)))
         self.hint.configure(bg=self.background_color, font=(self.font_name, 9))
+        self.window_controls.configure(bg=self.background_color)
         self.settings_btn.configure(bg=self.background_color)
         self.close_btn.configure(bg=self.background_color)
 
