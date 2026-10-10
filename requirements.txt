@@ -1,5 +1,0 @@
-numpy
-pyaudiowpatch
-soxr
-faster-whisper      # 只用它自带的 Silero VAD / only for its bundled Silero VAD
-huggingface_hub     # setup only: download the Qwen3-ASR GGUF model files

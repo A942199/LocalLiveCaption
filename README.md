@@ -1,68 +1,225 @@
-# LocalLiveCaption
+# LiveCaptions Translator — 主窗口外观定制版
 
-Windows 本地实时字幕工具。本项目在开源项目基础上进行修改，主要用于 **日语实时语音识别 + 中文翻译字幕**。
+> 仓库 A942199/LocalLiveCaption 的 main 已从原 Python 字幕工具切换为基于 [SakiRinn/LiveCaptions-Translator](https://github.com/SakiRinn/LiveCaptions-Translator) **v1.7.1300.1822** 的 Windows C#/WPF 定制版。原 Python 工程保存在 backup/python-version-before-replacement-20261010 分支；本仓库保留原上游著作权和许可证。
 
-## 代码出处
+**新增：** 日语原文与中文译文的字体、字号、文字颜色和字幕卡片背景色可以通过 setting.json 的 MainWindow 字段修改。默认使用深色背景、白色日语和浅蓝色中文。旧版 setting.json 仍可读取，保留 Google2 等翻译设置和长字幕自动缩小机制。
 
-本项目主要基于以下开源项目实现：
+- 配置教程：[APPEARANCE.md](APPEARANCE.md)
+- 构建：在 Windows 安装 .NET 8 SDK 后执行：dotnet publish LiveCaptionsTranslator.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish/custom-win-x64
+- **重要：** 不要把含有 API 密钥的私人 setting.json 提交到公共仓库。EXE 与 ZIP 属于发布构建产物，不随 Git 源码入库。
 
-- [TerryKiddy/live-caption](https://github.com/TerryKiddy/live-caption)  
-  本项目的音频采集、WASAPI loopback、Silero VAD、Qwen3-ASR / llama.cpp 推理、实时 partial/final 字幕处理和悬浮字幕窗口等核心 ASR 代码均基于该项目修改。
+---
+<div align="center">
 
-- [SakiRinn/LiveCaptions-Translator](https://github.com/SakiRinn/LiveCaptions-Translator)  
-  Google 翻译调用方式，以及翻译触发时机、未完成句翻译、完整句立即翻译、翻译任务新旧结果处理等逻辑参考并适配自该项目。
+<img src="src/LiveCaptions-Translator.ico" width="128" height="128" alt="LiveCaptions-Translator Icon"/>
 
-同时使用：
+# LiveCaptions Translator
 
-- [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) — 语音识别模型
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) — GGUF 模型 GPU 推理
-- [Silero VAD](https://github.com/snakers4/silero-vad) — 语音活动检测
-- [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch) — Windows WASAPI loopback 音频采集
+<a href="https://trendshift.io/repositories/14278" target="_blank"><img src="https://trendshift.io/api/badge/repositories/14278" alt="SakiRinn%2FLiveCaptions-Translator | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-感谢以上项目及其作者。
+### *Real-time audio/speech translation tool based on Windows LiveCaptions*
 
-## 本项目实现的功能
+[![Master Build](https://github.com/SakiRinn/LiveCaptions-Translator/actions/workflows/dotnet-build.yml/badge.svg?branch=master)](https://github.com/SakiRinn/LiveCaptions-Translator/actions/workflows/dotnet-build.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/SakiRinn/LiveCaptions-Translator?label=Latest&color=yellow)](https://github.com/SakiRinn/LiveCaptions-Translator/releases/latest)
+[![Windows 11](https://img.shields.io/badge/platform-Windows11-blue?logo=windows11&style=&color=1E9BFA)](https://www.microsoft.com/en-us/software-download/windows11)
+[![GitHub License](https://img.shields.io/github/license/SakiRinn/LiveCaptions-Translator)](https://github.com/SakiRinn/LiveCaptions-Translator/blob/master/LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/SakiRinn/LiveCaptions-Translator)](https://github.com/SakiRinn/LiveCaptions-Translator/stargazers)
 
-- 直接捕获 Windows 当前播放的系统音频，无需虚拟声卡。
-- 使用 **Qwen3-ASR-1.7B + llama.cpp + NVIDIA GPU** 在本地实时识别日语。
-- 说话过程中以完整当前 utterance 做 partial 识别；RTX 3090 实测性能足够，避免非 stateful ASR 使用 rolling window 时产生错拼。
-- 使用 **Recoverable Stable Prefix**：连续多次一致的日语前缀才锁定；单次冲突先抑制，若连续 3 次都冲突则自动解锁并纠正，既减少字幕抖动也避免早期错字被永久锁死。
-- 使用 **Fast Partial + Accurate Final** 双路径：partial 负责低延迟显示；句尾后用完整 utterance 再做一次 second-pass ASR，final 永远以完整重识别结果为准。
-- 使用 **Smart Endpointing**：普通静音、句末标点、日语犹豫/连接词使用不同的 speech-final 等待时间，并保留 max-seg 强制切分。
-- 使用 Google Translate 将识别到的日语实时翻译为简体中文。
-- 翻译时机参考 LiveCaptions-Translator：
-  - 完整句出现句末标点时立即翻译；
-  - 未完成句在字幕连续变化达到阈值时提前翻译；
-  - 字幕停止变化约 1.25 秒时也会触发翻译；
-  - 较新的翻译结果不会被较旧任务覆盖。
-- 悬浮字幕窗口同时显示日语和中文翻译；历史日语字幕数量可在 **⚙ 设置**中设为 `0～5` 句，默认 `1` 句。
-- 字幕窗口支持拖动、鼠标滚轮调整字号、右上角 **⚙ 设置**、**×** 或 **Esc** 关闭。
-- 设置面板可调整并保存：ASR 主模型（Q8_0 / BF16）、字体、字号、窗口透明度、窗口宽度、距屏幕底部距离、字幕停留时间、历史字幕数量（0～5）、日语/中文/历史字幕/背景颜色、窗口置顶、是否显示历史字幕、当前字幕粗体。
-- **识别参数**子窗口可直接调整上下文句数/字符数、llama context、并行 slots、max tokens、temperature、VAD 参数、partial 刷新、Stable 连续确认次数、普通/标点/犹豫词三类句尾静音、最短/最长句段和自动增益，并提供“一键高精度推荐”。无需手改代码。
-- 字幕外观即时生效；ASR 模型和识别参数在下次启动生效。配置保存在本地 `live-caption-settings.json`，不会提交到 Git；显式命令行参数仍然优先。
-- 模型选择默认使用 Q8_0；选择 BF16 后会加载 `models/Qwen3-ASR-1.7B-bf16.gguf`。若 BF16 文件缺失，会自动回退到 Q8_0。显式传入命令行 `--model` 时，以命令行指定模型为准。
-- 日语识别在本地完成；**中文翻译需要联网，并会将识别后的文本发送给 Google Translate**。
+**English** | [中文](README_zh-CN.md)
 
-主程序：
+</div>
 
-`live-caption-ja.pyw`
+## Overview
 
-## 新电脑安装
+**✨ LiveCaptions Translator = Windows LiveCaptions + Translate API ✨**
 
-目标环境：**Windows 10/11 x64 + NVIDIA GPU**。请先安装较新的 NVIDIA 显卡驱动，并保持网络连接。
+This is a lightweight tool that seamlessly integrates translation APIs with Windows Live Captions, enabling real-time speech translation without requiring a Copilot+ PC.
 
-1. 下载或克隆本仓库。
-2. 双击 `setup.bat`。
-3. 等待安装完成后，双击 `live-caption-ja.pyw`。
+Windows' built-in LiveCaptions is easy to use, uses few resources, and has extremely high recognition accuracy. If empowering it with the awesome translation capabilities of LLMs, you will get... possibly the best real-time translator available to date!
 
-`setup.bat` 会自动完成：
+**🚀 Quick Start:** Download from [Releases](https://github.com/SakiRinn/LiveCaptions-Translator/releases) and start with a single click!
 
-- 检查 Python 3.11+；如果未安装且系统有 `winget`，会自动安装 Python 3.11。
-- 创建项目自己的 `.venv` 并安装 Python 依赖。
-- 从 Hugging Face 下载 Qwen3-ASR-1.7B 的两个 GGUF 模型文件（约 2.8 GB）。
-- 从 llama.cpp 最近的 GitHub Releases 自动选择兼容的 **Windows x64 CUDA** 构建：优先 CUDA 12.x，如当前版本只提供 CUDA 13.x 则自动回退，并下载匹配的 CUDA Runtime DLL，然后解压到 `llama/`。
-- 检查模型、Python 依赖和 `llama-server.exe` 是否可用。
+<div align="center">
+  <img src="images/preview.png" alt="Preview of LiveCaptions Translator" width="90%" />
+  <br>
+  <em style="font-size:80%">Preview of LiveCaptions Translator</em>
+  <br>
+</div>
 
-安装生成的 `.venv/`、`models/`、`llama/`、日志和字幕文件都已加入 `.gitignore`，不会提交到仓库。
+## Features
 
-> 日语语音识别完全在本机运行；中文翻译需要联网。若新电脑没有 NVIDIA 驱动，或驱动版本过旧，请先更新驱动。
+- **🔄 Seamless Integration**
+
+  Automatically invokes Windows LiveCaptions without opening separate windows. Provides a unified experience for real-time audio/speech translation.
+
+  After your first use, Windows LiveCaptions will be hidden by default. You can show it again in the settings.
+
+  <div align="center">
+    <img src="images/show_livecaptions.png" alt="LiveCaptions Show/Hide button" width="90%" />
+    <br>
+    <em style="font-size:80%">LiveCaptions Show/Hide button</em>
+    <br>
+  </div>
+
+  By enabling the ***Include microphone audio*** option in the setting of Windows LiveCaptions, you can achieve real-time speech translation!
+  > ⚠️ **IMPORTANT:** You must change the source language in Windows LiveCaptions!
+
+- **🎨 Modern Interface**
+
+  Easy-to-use and clean Fluent UI aligned with modern Windows aesthetics.
+
+  It can automatically switches between light and dark themes 🌓 based on the system setting.
+
+- **🌐 Multiple Translation Services**
+
+  Supports various translation engines, including 2 out-of-the-box Google Translate.
+
+  Implemented translation engines are shown in the table below:
+
+  <div align="center">
+
+  | API                                                 | Type        | Hosting     |
+  |-----------------------------------------------------|-------------|-------------|
+  | [Ollama](https://ollama.com)                        | LLM-based   | Self-hosted |
+  | OpenAI Compatible API                               | LLM-based   | Online      |
+  | [OpenRouter](https://openrouter.ai)                 | LLM-based   | Online      |
+  | Google Translate                                    | Traditional | Online      |
+  | DeepL                                               | Traditional | Online      |
+  | Youdao                                              | Traditional | Online      |
+  | Baidu Translate                                     | Traditional | Online      |
+  | [MTranServer](https://github.com/xxnuo/MTranServer) | Traditional | Self-hosted |
+  | [LibreTranslate](https://libretranslate.com/)       | Traditional | Self-hosted |
+
+  </div>
+
+  It's strongly recommended using **LLM-based** translation engines, as LLMs excel at handling incomplete sentences and are adept at understanding context.
+
+- **🪟 Overlay Window**
+
+  Open a borderless, transparent overlay window to display subtitles, providing the most immersive experience. This is very useful for scenarios like gaming, videos, and live streams!
+
+  You can even make it completely embedded into the screen, becoming part of it. This means it won't affect any of your operations at all! This is perfect for gamers.
+
+  <div align="center">
+    <img src="images/overlay_window.png" alt="Overlay Window" width="80%" />
+    <br>
+    <em style="font-size:80%">Overlay window</em>
+    <br>
+  </div>
+
+  You can open the Overlay Window on the taskbar and adjust its parameters such as the window background and subtitle color, font size, and transparency. Extremely high configurability allows it to completely match your preferences!
+
+  You can adjust the number of sentences displayed simultaneously in the *Overlay Sentences* section of the setting page.
+
+- **⚙️ Flexible Controls**
+
+  Supports Always-on-top window and convenient translation pause/resume, and you can copy text with a single click for quick share or saving.
+
+- **📒 History Management**
+
+  Records original and translated text, perfect for meetings, lectures, and important discussions.
+
+  You can export all records as a CSV file.
+
+  <div align="center">
+    <img src="images/history.png" alt="Translation history" width="90%" />
+    <br>
+    <em style="font-size:80%">Translation history</em>
+    <br>
+  </div>
+
+- **🎞️ Log Cards**
+
+  Recent transcription records can be displayed as Log Cards, which helps you better grasp the context.
+
+  You can enable it on the taskbar of the main page and change the number of cards in the *Log Cards* section of the setting page.
+
+  <div align="center">
+    <img src="images/log_cards.png" alt="Log cards" width="90%" />
+    <br>
+    <em style="font-size:80%">Log Cards</em>
+    <br>
+  </div>
+
+
+## Prerequisites
+
+<div align="center">
+
+| Requirement                                                                                                           | Details                                     |
+|-----------------------------------------------------------------------------------------------------------------------|---------------------------------------------|
+| <img src="https://img.shields.io/badge/Windows-11%20(22H2+)-0078D6?style=for-the-badge&logo=windows&logoColor=white"> | With LiveCaptions support.                  |
+| <img src="https://img.shields.io/badge/.NET-8.0+-512BD4?style=for-the-badge&logo=dotnet&logoColor=white">             | Recommended. Not test in previous versions. |
+
+</div>
+
+This tool is based on Windows LiveCaptions, which is available since **Windows 11 22H2**.
+
+We suggest you have **.NET runtime 8.0** or higher installed. If you are not available to install one, you can download the ***with runtime*** version but its size is bigger.
+
+<div align="center">
+  <p align="center">
+    <a href="https://github.com/SakiRinn/LiveCaptions-Translator/wiki">
+      <img src="https://img.shields.io/badge/📚_Check_our_Wiki_for_detailed_information-2ea44f?style=for-the-badge" alt="Check our Wiki">
+    </a>
+  </p>
+</div>
+
+## Getting Started
+
+> ⚠️ **IMPORTANT:** You must complete the following steps before running LiveCaptions Translator for the first time.
+>
+> For detailed information, see Microsoft's guide on [Using live captions](https://support.microsoft.com/en-us/windows/use-live-captions-to-better-understand-audio-b52da59c-14b8-4031-aeeb-f6a47e6055df).
+
+### Step 1: Verify Windows LiveCaptions Availability
+
+Confirm LiveCaptions is available on your system using any of these methods:
+
+- Toggle **Live captions** in the quick settings
+- Press **Win + Ctrl + L**
+- Access via **Quick settings** > **Accessibility** > **Live captions**
+- Open **Start** > **All apps** > **Accessibility** > **Live captions**
+- Navigate to **Settings** > **Accessibility** > **Captions** and enable **Live captions**
+
+### Step 2: Configure LiveCaptions
+
+When you first start, Windows LiveCaptions will ask for your consent to process voice data on your device and prompt you to download language files to be used by on-device speech recognition.
+
+After launching Windows LiveCaptions, click the **⚙️ gear** icon to open the setting menu, then select **Position** > **Overlaid on screen**.
+
+> ⚠️ **VERY IMPORTANT!** Otherwise, a display bug will occur on the screen after hiding Windows LiveCaptions.
+
+<div align="center">
+  <img src="images/speech_recognition.png" alt="Items under speech recognition" width="80%" />
+  <br>
+  <em style="font-size:80%">Required speech recognition downloads</em>
+  <br>
+</div>
+
+After configuration, close Windows LiveCaptions and launch LiveCaptions Translator to start using it! 🎉
+
+## Project Stats
+
+### Activity
+
+<div align="center">
+  <img src="https://img.shields.io/github/issues/SakiRinn/LiveCaptions-Translator?style=for-the-badge&label=Issues&color=yellow" alt="GitHub Issues">
+  <img src="https://img.shields.io/github/issues-pr/SakiRinn/LiveCaptions-Translator?style=for-the-badge&label=Pull%20Requests&color=blue" alt="GitHub Pull Requests">
+  <img src="https://img.shields.io/github/discussions/SakiRinn/LiveCaptions-Translator?style=for-the-badge&label=Discussions&color=orange" alt="GitHub Discussions">
+  <img src="https://img.shields.io/github/last-commit/SakiRinn/LiveCaptions-Translator?style=for-the-badge&label=Last%20Commit&color=purple" alt="GitHub Last Commit">
+</div>
+
+### Contributors
+
+<div align="center">
+  <img src="https://img.shields.io/github/contributors/SakiRinn/LiveCaptions-Translator?style=for-the-badge&label=Contributors&color=success" alt="GitHub Contributors">
+  <br>
+  <a href="https://github.com/SakiRinn/LiveCaptions-Translator/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=SakiRinn/LiveCaptions-Translator" />
+  </a>
+</div>
+
+### Star History
+
+[![Stargazers over time](https://starchart.cc/SakiRinn/LiveCaptions-Translator.svg?variant=adaptive)](https://starchart.cc/SakiRinn/LiveCaptions-Translator)
+
