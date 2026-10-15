@@ -1,7 +1,7 @@
-"""Cross-language contracts pinned to upstream C# commit a6fee12757b1.
+"""Frozen C# parity contracts from pre-cleanup commit 7483b349.
 
-No real API, microphone, or GPU needed. Intentionally fails when a previously
-identified 1:1-port contract regresses.
+Self-contained in a fresh clone (no third_party checkout or WPF needed).
+All provider, language and scheduler assertions remain executable.
 """
 import csv
 from contextlib import closing
@@ -9,7 +9,6 @@ from collections import deque
 import json
 from pathlib import Path
 import queue
-import re
 import sqlite3
 import tempfile
 import threading
@@ -22,46 +21,37 @@ from translation.history import HistoryStore, TranslationEntry
 from translation.text import similarity
 
 BASE=Path(__file__).resolve().parent.parent
-UPSTREAM=(BASE/"src" if (BASE/"src"/"apis"/"TranslateAPI.cs").is_file()
-          else BASE/"third_party"/"LiveCaptions-Translator"/"src")
+# Pin the original C# contracts inside the repository so a fresh clone can
+# execute parity tests without an untracked third_party checkout or legacy WPF.
+CONTRACT=json.loads((BASE/"tests"/"fixtures"/"legacy_translation_contract.json").read_text(encoding="utf-8"))
 
 
 class UpstreamSchemaContracts(unittest.TestCase):
-    def test_provider_list_matches_upstream_source(self):
-        source=(UPSTREAM/"apis"/"TranslateAPI.cs").read_text(encoding="utf-8-sig")
-        block=source.split("TRANSLATE_FUNCTIONS = new()",1)[1].split("};",1)[0]
-        names=re.findall(r'\{\s*"(\w+)"\s*,\s*\w+\s*\}',block)
-        # The preserved C#/WPF branch predates upstream LMStudio support;
-        # the Python port follows pinned a6fee127, which includes it.
-        if UPSTREAM == BASE/"src":
-            self.assertEqual(set(names),set(ENGINES)-{"LMStudio"})
-        else:
-            self.assertEqual(set(names),set(ENGINES))
+    def test_provider_list_matches_frozen_legacy_contract(self):
+        legacy=set(CONTRACT["legacy_engine_names"])
+        added=set(CONTRACT["additional_python_engine_names"])
+        self.assertEqual(10,len(legacy))
+        self.assertEqual(set(ENGINES),legacy | added)
+        self.assertFalse(legacy & added)
 
-    def test_deepl_all_13_language_codes_match_upstream(self):
-        source=(UPSTREAM/"models"/"TranslateAPIConfig.cs").read_text(encoding="utf-8-sig")
-        block=source.split("public class DeepLConfig",1)[1].split("private string apiKey",1)[0]
-        expected=dict(re.findall(r'\{\s*"([^"]+)",\s*"([^"]+)"\s*\}',block))
+    def test_deepl_all_13_language_codes_match_frozen_contract(self):
+        expected=CONTRACT["supported_languages"]["DeepL"]
         self.assertEqual(13,len(expected))
         for target,code in expected.items():
             with self.subTest(target=target):
                 self.assertEqual(code,TranslationAPI(TranslationSettings(target=target))._lang("DeepL"))
 
-    def test_all_target_tables_exact_source_mapping(self):
-        source=(UPSTREAM/"models"/"TranslateAPIConfig.cs").read_text(encoding="utf-8-sig")
+    def test_all_target_tables_exact_frozen_mapping(self):
         for engine in ("DeepL","Youdao","MTranServer","Baidu","LibreTranslate"):
             with self.subTest(engine=engine):
-                block=source.split("public class "+engine+"Config ",1)[1]
-                table=block.split("SupportedLanguages => new()",1)[1].split("};",1)[0]
-                mapping=dict(re.findall(r'\{\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\}',table))
+                mapping=CONTRACT["supported_languages"][engine]
                 self.assertEqual(13,len(mapping))
                 for language,expected in mapping.items():
                     actual=TranslationAPI(TranslationSettings(target=language))._lang(engine)
                     self.assertEqual(expected,actual,(engine,language))
 
-    def test_request_schemas_match_upstream_discriminators(self):
-        source=(UPSTREAM/"apis"/"LLMRequestDataFactory.cs").read_text(encoding="utf-8-sig")
-        schemas=re.findall(r'\["([^"]+)"\]\s*=\s*typeof',source)
+    def test_request_schemas_match_frozen_upstream_discriminators(self):
+        schemas=CONTRACT["llm_schema_order"]
         self.assertEqual(["integrated","Aliyun","Anthropic","Ollama",
                           "OpenRouter","OpenAI","XAI","base"],schemas)
         for schema in schemas:

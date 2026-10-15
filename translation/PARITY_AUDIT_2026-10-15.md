@@ -1,3 +1,5 @@
+历史审计快照：文中的 C# 文件路径指清理前 Git 提交 7483b349；现行 Python 上游测试使用 tests/fixtures/legacy_translation_contract.json。
+
 # LiveCaptions-Translator → live-caption-ja.pyw 一比一移植审计
 
 > 审计日期：2026-10-15。只读业务审计；仅新增本报告，未修改 ASR、翻译业务代码、设置或数据库。未运行真实第三方翻译 API。

@@ -1,0 +1,107 @@
+{
+  "additional_python_engine_names": [
+    "LMStudio"
+  ],
+  "description": "Frozen upstream C# translation API contract, extracted from pre-Python-only legacy sources; no network or untracked third_party required.",
+  "legacy_engine_names": [
+    "Google",
+    "Google2",
+    "Ollama",
+    "OpenAI",
+    "DeepL",
+    "OpenRouter",
+    "Youdao",
+    "MTranServer",
+    "Baidu",
+    "LibreTranslate"
+  ],
+  "llm_schema_order": [
+    "integrated",
+    "Aliyun",
+    "Anthropic",
+    "Ollama",
+    "OpenRouter",
+    "OpenAI",
+    "XAI",
+    "base"
+  ],
+  "original_project": "SakiRinn/LiveCaptions-Translator",
+  "source_commit": "7483b349932bd7b7409e7e57789c2b1ade0b33b2",
+  "supported_languages": {
+    "Baidu": {
+      "ar-SA": "ara",
+      "en-GB": "en",
+      "en-US": "en",
+      "es-ES": "spa",
+      "fr-FR": "fra",
+      "ja-JP": "jp",
+      "ko-KR": "kor",
+      "pt-BR": "pt",
+      "ru-RU": "ru",
+      "th-TH": "th",
+      "tr-TR": "tr",
+      "zh-CN": "zh",
+      "zh-TW": "cht"
+    },
+    "DeepL": {
+      "ar-SA": "AR",
+      "en-GB": "EN-GB",
+      "en-US": "EN-US",
+      "es-ES": "ES",
+      "fr-FR": "FR",
+      "ja-JP": "JA",
+      "ko-KR": "KO",
+      "pt-BR": "PT-BR",
+      "ru-RU": "RU",
+      "th-TH": "TH",
+      "tr-TR": "TR",
+      "zh-CN": "ZH-HANS",
+      "zh-TW": "ZH-HANT"
+    },
+    "LibreTranslate": {
+      "ar-SA": "ar",
+      "en-GB": "en",
+      "en-US": "en",
+      "es-ES": "es",
+      "fr-FR": "fr",
+      "ja-JP": "ja",
+      "ko-KR": "ko",
+      "pt-BR": "pt",
+      "ru-RU": "ru",
+      "th-TH": "th",
+      "tr-TR": "tr",
+      "zh-CN": "zh",
+      "zh-TW": "zh"
+    },
+    "MTranServer": {
+      "ar-SA": "ar",
+      "en-GB": "en",
+      "en-US": "en",
+      "es-ES": "es",
+      "fr-FR": "fr",
+      "ja-JP": "ja",
+      "ko-KR": "ko",
+      "pt-BR": "pt",
+      "ru-RU": "ru",
+      "th-TH": "th",
+      "tr-TR": "tr",
+      "zh-CN": "zh",
+      "zh-TW": "zh"
+    },
+    "Youdao": {
+      "ar-SA": "ar",
+      "en-GB": "en",
+      "en-US": "en",
+      "es-ES": "es",
+      "fr-FR": "fr",
+      "ja-JP": "ja",
+      "ko-KR": "ko",
+      "pt-BR": "pt",
+      "ru-RU": "ru",
+      "th-TH": "th",
+      "tr-TR": "tr",
+      "zh-CN": "zh-CHS",
+      "zh-TW": "zh-CHT"
+    }
+  }
+}

@@ -47,4 +47,4 @@
 
 离线测试：`.venv\Scripts\python.exe -B -m unittest discover -s tests -p "test_*.py" -v`。
 
-Python 与上游 C# 是不同的运行时。`urllib` 无法像 .NET CancellationToken 那样可靠中断正在进行的 HTTP 请求，取消后改为丢弃返回结果；这属于已知实现差异。外部 API 真正联网、密钥授权、GPU 音频和与 C# 原版逐条差分仍需实测，模拟测试通过不等于接口上线验证。Windows Live Captions/WPF 的外壳功能不属于本地 Python 翻译模块。
+Python 与上游 C# 是不同的运行时。翻译传输使用每任务取消令牌，可关闭已注册的 HTTP Socket 来中断部分正在进行的请求，并会拒绝过期结果；DNS、连接建立等边界不能保证与 .NET 完全一致。Google 和 Google2 已有少量真实联网验收，其余服务仍需各自的授权和联网验证。旧 C#/WPF 程序源码已移出本项目当前工作树；翻译上游测试改为固定的 tests/fixtures/legacy_translation_contract.json 契约，不依赖未跟踪的 third_party/。历史 C# 源码可在 Git 清理前提交 7483b349 找回。
