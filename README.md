@@ -13,6 +13,27 @@ Windows 10/11 上的本地 **日语语音识别 + 中文翻译** 悬浮字幕程
 
 首次安装需要网络连接，模型与 CUDA 运行库体积较大。日语 ASR 在本地运行；中文翻译根据所选服务可能向外部 API 发送日语文本。
 
+## 现有 Windows 电脑快速启动（独立 .venv）
+
+项目首次设置独立的 Python 虚拟环境：
+
+    py -3.11 -m venv .venv
+    $env:PYTHONUTF8 = '1'
+    .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+复制 .env.example 为 .env，在 .env 中填写已下载的三个模型 / llama.cpp 文件路径（当前开发机已配置好），随后双击 start.cmd。
+启动器 start.ps1 会为子进程设置 VIRTUAL_ENV、PATH 和 PYTHONUTF8，而不会永久修改系统环境变量：
+
+    .\start.cmd -Check     # 核查 .venv、包、模型和启动入口
+    .\start.cmd -Test      # 执行全部 Python 回归测试
+    .\start.cmd            # 启动真实字幕 GUI
+
+如需强制在当前 PowerShell 会话中激活自己的环境，可以执行：
+
+    .\.venv\Scripts\Activate.ps1
+
+注意：setup.bat 是针对新电脑全新安装的脚本；它会下载模型和 CUDA 推理服务。已有模型时请先使用 .env + start.cmd，避免重复下载约 2.8 GB 模型文件。
+
 ## 主要功能
 
 - WASAPI loopback 捕获 Windows 系统音频，Silero VAD 检测语音，Qwen3-ASR + llama.cpp GPU 识别日语。
