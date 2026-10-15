@@ -17,3 +17,10 @@ Preserve existing worktree changes. No code push or merge without explicit user 
 - Verified knowledge to retain: Never overwrite the local uncommitted Python branch with divergent remote WPF main. Share saved ASR settings between GUI and console. Qwen3-ASR forced language via trailing assistant prefix. Bounded VAD hysteresis and exact preroll samples. Preserve Japanese repetitions. Check reused server slots, context and audio capability. Real Japanese CER still not measured.
 - Source task: `docs/ai-orchestrator/runs/asr-accuracy-fixes-20261015/report.md`
 
+<!-- ai-orchestrator:checkpoint:v1:asr-btsj-cer-20261015 -->
+## Durable checkpoint: asr-btsj-cer-20261015
+- Outcome: `BLOCKED`
+- Code HEAD before memory writes: `8fa21c1058476b7d7949f987bebe6196ebb1dae7`
+- Verified knowledge to retain: The original BTSJ 331-333 recordings and reference annotations were not recoverable from the local Windows folders checked. The historical 3646.54 seconds / 39.660% CER is not a new measurement. The 1200s prior Japanese TTS replay had 133 maxlen finals out of 134, suggesting the boundary needs a future controlled test, not that loss or overlap benefit is proven. Do not alter max-seg overlap until matching audio and gold transcripts are provided.
+- Source task: `docs/ai-orchestrator/runs/asr-btsj-cer-20261015/report.md`
+
