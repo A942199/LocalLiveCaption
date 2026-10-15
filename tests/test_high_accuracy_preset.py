@@ -23,6 +23,8 @@ def sample_args():
 
 
 class HighAccuracyPresetTests(unittest.TestCase):
+    @unittest.skipIf(os.environ.get("GITHUB_ACTIONS") == "true",
+                     "Real Tk widgets require an interactive Windows desktop")
     def test_real_gui_button_sets_every_preset_and_persists_japanese(self):
         # Never read/write the user's actual live-caption-settings.json.
         with patch.object(Overlay, "_load_settings", autospec=True,
