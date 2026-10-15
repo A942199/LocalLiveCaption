@@ -32,6 +32,9 @@ jobs:
     name: Python tests (Windows 3.11)
     runs-on: windows-latest
     timeout-minutes: 25
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
