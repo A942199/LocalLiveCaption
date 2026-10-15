@@ -38,3 +38,10 @@ Add only verified project decisions and outcomes; do not include secrets.
 - Verified knowledge to retain: Avoid Tk Chinese label reconfiguration when text unchanged, unnecessary repeated alpha updates, and ASR status clearing retained translation. In Windows nested Python subprocess tests propagate PYTHONUTF8=1. Real six-clip FLEURS CER is bounded ASR smoke evidence, not translation accuracy validation. Main merge requires separate independent review and GitHub protection gate verification.
 - Source task: `docs/ai-orchestrator/runs/translation-release-qa-20261016/report.md`
 
+<!-- ai-orchestrator:checkpoint:v1:python-cleanup-merge-push-20261016 -->
+## Durable checkpoint: python-cleanup-merge-push-20261016
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `4e5401fef10e2398c5e3c4d93983370102e56ac3`
+- Verified knowledge to retain: Keep local .env, model binaries and .venv ignored. A local main merge plus GitHub branch push does not constitute a remote main merge; high-risk Python-only cleanup removing legacy WPF requires independent review and confirmed branch protection before remote main merge.
+- Source task: `docs/ai-orchestrator/runs/python-cleanup-merge-push-20261016/report.md`
+
