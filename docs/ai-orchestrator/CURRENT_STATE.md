@@ -16,3 +16,11 @@ A task checkpoint is not proof of tests, independent review, CI or merge.
 - Evidence references: 2
 This is a task checkpoint, not a merged default-branch state.
 
+<!-- ai-orchestrator:checkpoint:v1:translation-flicker-acceptance-20261015 -->
+## Task status update: translation-flicker-acceptance-20261015
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `3a56840ff41d7a59c34ba197a82f36bddc5e83cf`
+- Summary: PR #6 flicker-specific QA on final code commit. Actual hidden Tk widget: 24 Partial events, 116 sampled updates with 0 blank Chinese text/alpha 0.82; 19 redundant unchanged-text label reconfigures. Async delayed Partial vs newer Final: 2 published updates, 0 blank and 0 stale rollback. Six-second auto-hide intentionally fades and clears; status messages intentionally clear Chinese label. All 110 Python tests pass, 0 failures. No visible-screen frame capture or real Japanese audio validation. No source changes.
+- Evidence references: 2
+This is a task checkpoint, not a merged default-branch state.
+
