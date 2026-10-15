@@ -24,3 +24,9 @@ This is a task checkpoint, not a merged default-branch state.
 - Evidence references: 2
 This is a task checkpoint, not a merged default-branch state.
 
+<!-- ai-orchestrator:checkpoint:v1:python-ci-quality-20261016 -->
+## Task checkpoint: python-ci-quality-20261016
+- Outcome: `AWAITING_REVIEW` — Python CI passes but physical Windows audio/GUI acceptance and independent PR review remain open.
+- Tested code HEAD: `92bcd20e4a59039fd89588500f14c5be3b31c114`
+- GitHub Actions: `https://github.com/A942199/LocalLiveCaption/actions/runs/38788278999` (110 tests, OK, skipped=2).
+- Source PR: `https://github.com/A942199/LocalLiveCaption/pull/6` (draft; not merged).
