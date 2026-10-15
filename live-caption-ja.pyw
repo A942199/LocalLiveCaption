@@ -445,6 +445,7 @@ class OverlaySink:
         self.caption_seen = False    # 启动状态条在首句字幕出现前保持可见
         self.last_update = time.time()
         self.fading = False
+        self._overlay_hidden = False
         self._fade_generation = 0
         self.closed = False
         root = tk.Tk()
@@ -1185,8 +1186,9 @@ class OverlaySink:
                     self.caption_seen = True
             elif kind == "s":
                 self.finals, self.partial_text = [], text
-                self.translation_text = ""
-                self.translation_source = ""
+                # Reconnecting the ASR service is not a new translation.
+                # Preserve the last completed Chinese text until replaced or
+                # the user's auto-hide interval expires.
             else:
                 if text:
                     self.caption_seen = True
@@ -1196,7 +1198,9 @@ class OverlaySink:
             self.last_update = time.time()
         if changed:
             self._stop_fade()
-            self.root.attributes("-alpha", self.alpha)
+            if getattr(self, "_overlay_hidden", False):
+                self.root.attributes("-alpha", self.alpha)
+                self._overlay_hidden = False
             self._render()
         elif (self.auto_hide and self.caption_seen and (self.finals or self.partial_text)
               and not self.fading and time.time() - self.last_update > self.hold):
@@ -1217,7 +1221,8 @@ class OverlaySink:
         prev = "\n".join(history)
         self.l_prev.configure(text=prev if self.show_previous else "")
         self.l_cur.configure(text=cur)
-        self.l_trans.configure(text=translated)
+        if self.l_trans.cget("text") != translated:
+            self.l_trans.configure(text=translated)
 
     # ---- 渐隐：hold 秒没新字后 1.2s 内把整条淡出 ----
     def _start_fade(self):
@@ -1236,6 +1241,7 @@ class OverlaySink:
             self.translation_text, self.translation_source = "", ""
             self._render()
             self.root.attributes("-alpha", 0.0)   # 整条隐掉，来新字再出现
+            self._overlay_hidden = True
             self.fading = False
             return
         self.root.attributes("-alpha", self.alpha * (1 - i / n))

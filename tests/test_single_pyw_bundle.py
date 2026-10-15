@@ -40,6 +40,9 @@ class SingleFileBundleTests(unittest.TestCase):
             # Prevent launcher bootstrap into a nonexisting temporary .venv.
             env["_LIVE_CAPTION_PYW_BOOTSTRAPPED"] = "1"
             env.pop("PYTHONPATH", None)
+            # Parent and child must agree on UTF-8 on Windows regardless of
+            # console code page or whether the parent used -X utf8.
+            env["PYTHONUTF8"] = "1"
             # This tests the actual file's __main__ execution path, but asks
             # argparse for --help so audio capture and GPU inference never run.
             result = subprocess.run(

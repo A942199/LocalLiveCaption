@@ -64,6 +64,32 @@ def blank_overlay(auto_hide=True, caption="字幕"):
 
 
 class OverlayAutoHideTests(unittest.TestCase):
+    def test_partial_refresh_does_not_reconfigure_identical_translation(self):
+        overlay = blank_overlay(auto_hide=False)
+        overlay.translation_text = "已经显示的中文"
+        overlay.l_trans.cget.return_value = "已经显示的中文"
+        overlay.q.put(("p", "新しい日本語"))
+        overlay._poll()
+        overlay.l_trans.configure.assert_not_called()
+        overlay.root.attributes.assert_not_called()
+
+    def test_status_keeps_last_translation_until_replacement(self):
+        overlay = blank_overlay(auto_hide=False)
+        overlay.translation_text = "已有中文字幕"
+        overlay.translation_source = "元の日本語"
+        overlay.q.put(("s", "正在重连识别引擎"))
+        overlay._poll()
+        self.assertEqual("已有中文字幕", overlay.translation_text)
+        self.assertEqual("元の日本語", overlay.translation_source)
+
+    def test_completed_auto_hide_recovers_alpha_on_new_caption(self):
+        overlay = blank_overlay(auto_hide=True)
+        overlay._overlay_hidden = True
+        overlay.q.put(("p", "字幕回来了"))
+        overlay._poll()
+        overlay.root.attributes.assert_any_call("-alpha", overlay.alpha)
+        self.assertFalse(overlay._overlay_hidden)
+
     def test_disabled_auto_hide_does_not_start_fade_after_timeout(self):
         overlay = blank_overlay(auto_hide=False)
         with patch.object(overlay, "_start_fade") as start:
