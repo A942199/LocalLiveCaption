@@ -1,6 +1,8 @@
 # LiveCaptions Translator — 主窗口外观定制版
 
-> 仓库 A942199/LocalLiveCaption 的 main 已从原 Python 字幕工具切换为基于 [SakiRinn/LiveCaptions-Translator](https://github.com/SakiRinn/LiveCaptions-Translator) **v1.7.1300.1822** 的 Windows C#/WPF 定制版。原 Python 工程保存在 backup/python-version-before-replacement-20261010 分支；本仓库保留原上游著作权和许可证。
+> 本仓库同时保留两套可独立使用的实现：基于 [SakiRinn/LiveCaptions-Translator](https://github.com/SakiRinn/LiveCaptions-Translator) **v1.7.1300.1822** 的 Windows C#/WPF 定制版，以及 Python Qwen3-ASR 实时日中字幕版（`live-caption-ja.pyw`）。保留原上游著作权和许可证。
+>
+> **Python 版本使用与翻译设置：** [README_PYTHON.md](README_PYTHON.md) · [translation/README.md](translation/README.md) · [HTTP 主动取消与测试说明](translation/HTTP_CANCELLATION_PARITY_2026-10-15.md)。两套程序的运行依赖不同，请按各自说明安装。
 
 **新增：** 日语原文与中文译文的字体、字号、文字颜色和字幕卡片背景色可以通过 setting.json 的 MainWindow 字段修改。默认使用深色背景、白色日语和浅蓝色中文。旧版 setting.json 仍可读取，保留 Google2 等翻译设置和长字幕自动缩小机制。
 

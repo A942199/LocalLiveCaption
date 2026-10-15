@@ -3,6 +3,21 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# Local Python live-caption settings, data and model binaries
+.venv/
+__pycache__/
+*.pyc
+models/
+live-caption-settings.json
+translation-settings.json
+translation-settings.json.tmp
+translation-history.sqlite3
+translation-history.sqlite3-*
+transcript*.txt
+hotwords.txt
+debug*/
+tests/results/
+
 # User-specific files
 *.rsuser
 *.suo
