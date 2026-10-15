@@ -32,6 +32,9 @@ class GoogleTranslateSink:
     TRANSLATE_TICK = 0.040
     DISPLAY_TICK = 0.040
     COMPLETE_SENTENCE_CHOKE = 0.720
+    FINAL_JOIN_GRACE = 0.90
+    FINAL_MAX_BYTES = 360
+    PREVIEW_MIN_INTERVAL = 0.50
 
     def __init__(self, overlay, target="zh-CN", settings=None, api=None,
                  history=None, root=None):
@@ -55,6 +58,13 @@ class GoogleTranslateSink:
         self.state_lock = threading.Lock()
         self.observed_text = ""
         self.finalized_text = ""
+        self.final_generation = 0
+        self.final_dispatched_generation = 0
+        self.last_final_at = 0.0
+        self.last_final_marker = None
+        self.last_queued_key = None
+        self.last_preview_at = 0.0
+        self.preview_cache = None
         self.context_entries = deque(maxlen=10)
         self.original_caption = ""
         self.idle_count = 0
@@ -92,45 +102,83 @@ class GoogleTranslateSink:
         with self.state_lock:
             self.observed_text = getattr(self,"finalized_text","") + (text or "")
 
+    def partial_stable(self, display, stable):
+        """Feed stable ASR text to translation; other sinks still show display."""
+        with self.state_lock:
+            self.observed_text = getattr(self, "finalized_text", "") + (stable or "")
+
     def final(self,text,a=None,b=None):
         if not text or not text.strip():
             return
         with self.state_lock:
             source=text.strip()
-            # Endpointing establishes a sentence boundary even when Qwen3-ASR
-            # did not emit punctuation; the original ASR result is untouched.
-            if source[-1] not in PUNC_EOS:
-                source += "。"
-            self.finalized_text = (getattr(self,"finalized_text","") + source)[-8192:]
+            marker=(a,b) if a is not None and b is not None else None
+            if marker is not None and marker == getattr(self,"last_final_marker",None):
+                return
+            self.last_final_marker=marker
+            previous=getattr(self,"finalized_text","")
+            if (previous and previous[-1] not in PUNC_EOS and
+                    getattr(self,"final_dispatched_generation",0) ==
+                    getattr(self,"final_generation",0)):
+                # A timed-out unit was already committed; the next VAD
+                # segment starts a new translation unit, not an endless join.
+                previous=""
+            joining=" " if (previous and previous[-1].isascii() and
+                            previous[-1].isalnum() and source[0].isascii() and
+                            source[0].isalnum()) else ""
+            # Final is an audio boundary, not necessarily a Japanese sentence.
+            self.finalized_text = (previous + joining + source)[-8192:]
             self.observed_text = self.finalized_text
+            self.final_generation=getattr(self,"final_generation",0)+1
+            self.last_final_at=time.monotonic()
 
-    def _sync_once(self):
+    def _sync_once(self, now=None):
+        now=time.monotonic() if now is None else now
         with self.state_lock:
             original = self.observed_text
             if not original:
                 return None
             full_text = preprocess(original)
-            if not any(mark in full_text for mark in PUNC_EOS):
-                queue_ = getattr(self,"context_entries",None)
-                if queue_ is not None:
-                    queue_.clear()
             latest = extract_original_caption(full_text)
+            confirmed=extract_original_caption(
+                preprocess(getattr(self,"finalized_text","")))
             pending = None
+            kind = None
             if latest != self.original_caption:
                 self.original_caption = latest
                 self.idle_count = 0
-                if latest and latest[-1] in self.PUNC_EOS:
-                    self.sync_count = 0
-                    pending = latest
-                elif len(latest.encode("utf-8")) >= self.SHORT_THRESHOLD:
+                if latest and len(latest.encode("utf-8")) >= self.SHORT_THRESHOLD:
                     self.sync_count += 1
             else:
                 self.idle_count += 1
-            if self.sync_count > self.MAX_SYNC_INTERVAL or self.idle_count == self.MAX_IDLE_INTERVAL:
+            generation=getattr(self,"final_generation",0)
+            final_due=(confirmed and generation >
+                       getattr(self,"final_dispatched_generation",0) and
+                       (confirmed[-1] in self.PUNC_EOS or
+                        len(confirmed.encode("utf-8")) >= self.FINAL_MAX_BYTES or
+                        (latest==confirmed and
+                         now-getattr(self,"last_final_at",now) >= self.FINAL_JOIN_GRACE)))
+            if final_due:
+                pending=confirmed
+                kind="final"
+                self.final_dispatched_generation=generation
                 self.sync_count = 0
-                pending = self.original_caption
+            elif (latest and latest != confirmed and
+                  (latest[-1] in self.PUNC_EOS or
+                   self.sync_count > self.MAX_SYNC_INTERVAL or
+                   self.idle_count == self.MAX_IDLE_INTERVAL) and
+                  now-getattr(self,"last_preview_at",0) >= self.PREVIEW_MIN_INTERVAL):
+                pending=latest
+                kind="preview"
+                self.sync_count=0
+                self.last_preview_at=now
+            key=(kind,pending,generation if kind=="final" else None)
+            if pending and key == getattr(self,"last_queued_key",None):
+                pending=None
+            elif pending:
+                self.last_queued_key=key
         if pending:
-            self.pending_text_queue.put(pending)
+            self.pending_text_queue.put((pending,kind,generation))
         return pending
 
     def _sync_loop(self):
@@ -141,9 +189,19 @@ class GoogleTranslateSink:
     def _translate_loop(self):
         while not self.closed:
             try:
-                source = self.pending_text_queue.get_nowait()
+                item = self.pending_text_queue.get_nowait()
             except queue.Empty:
-                source = ""
+                item = ""
+            if isinstance(item,tuple):
+                source,kind,generation=item
+            else:
+                source,kind,generation=item,"final",None
+            # A queued draft from the preceding ASR segment is already stale
+            # once another Final has been accepted; never start its HTTP call.
+            if source and generation is not None:
+                with self.state_lock:
+                    if generation < getattr(self,"final_generation",0):
+                        source=""
             if source:
                 if self.settings.log_only:
                     try:
@@ -152,17 +210,25 @@ class GoogleTranslateSink:
                     except Exception as exc:
                         print("翻译历史保存失败：",repr(exc),flush=True)
                 else:
-                    self._enqueue_translation_task(source)
+                    self._enqueue_translation_task(source,kind,generation)
             time.sleep(self.TRANSLATE_TICK)
 
-    def _enqueue_translation_task(self,source):
+    def _enqueue_translation_task(self,source,kind="final",generation=None):
         with self.task_lock:
             if self.closed:
                 return None
             self.next_task_id += 1
             task = {"id":self.next_task_id,"text":source,"cancelled":False,
-                    "cancel_token":CancellationToken()}
+                    "cancel_token":CancellationToken(),"kind":kind,
+                    "generation":generation}
             self.tasks.append(task)
+            cached=getattr(self,"preview_cache",None)
+            reuse=(kind=="final" and not self.settings.context_aware and
+                   cached is not None and cached[:3]==
+                   (source,self.settings.engine,self.settings.target))
+        if reuse:
+            self._on_task_completed(task,cached[3],bool(source and source[-1] in PUNC_EOS))
+            return task
         thread=threading.Thread(target=self._translation_worker,
                                 args=(task,),daemon=True,
                                 name=f"translation-job-{task['id']}")
@@ -172,7 +238,8 @@ class GoogleTranslateSink:
 
     def _translation_worker(self,task):
         text = task["text"]
-        choke = bool(text and text[-1] in PUNC_EOS)
+        choke = bool(text and text[-1] in PUNC_EOS and
+                     task.get("kind")!="preview")
         with self.state_lock:
             contexts = (list(self.context_entries)[-self.settings.num_contexts:]
                         if self.settings.context_aware and self.settings.num_contexts>0
@@ -208,6 +275,11 @@ class GoogleTranslateSink:
         with self.task_lock:
             if task.get("cancelled") or task not in self.tasks or self.closed:
                 return False
+            if task.get("kind")=="preview" and task.get("generation") is not None:
+                with self.state_lock:
+                    if task["generation"] < getattr(self,"final_generation",0):
+                        self.tasks.remove(task)
+                        return False
             index=self.tasks.index(task)
             for older in self.tasks[:index]:
                 older["cancelled"]=True
@@ -220,26 +292,31 @@ class GoogleTranslateSink:
             with self.output_lock:
                 self.output=(task["text"],translated,choke)
                 self.output_version += 1
-        try:
-            previous=self.history.last()
-            if not isinstance(getattr(previous,"source",None),str):
-                previous=None
-            overwrite=bool(previous and similar_to_last(task["text"],previous.source))
-            # Upstream AddContexts() queues the previous log *before* the
-            # current (non-overwrite) record is committed.
-            if not overwrite and previous:
-                with self.state_lock:
-                    queue_=getattr(self,"context_entries",None)
-                    if queue_ is not None:
-                        queue_.append(previous)
-            self.history.log(task["text"],translated,self.settings.target,
-                             self.settings.engine,overwrite=overwrite)
-        except Exception as error:
-            print("翻译历史保存失败：",repr(error),flush=True)
+            if task.get("kind")=="preview":
+                if not translated.startswith(("[ERROR]","[WARNING]")):
+                    self.preview_cache=(task["text"],self.settings.engine,
+                                        self.settings.target,translated)
+                return True
+            # Accepted output and its history must retain the same task order.
+            try:
+                previous=self.history.last()
+                if not isinstance(getattr(previous,"source",None),str):
+                    previous=None
+                overwrite=bool(previous and similar_to_last(task["text"],previous.source))
+                if not overwrite and previous:
+                    with self.state_lock:
+                        queue_=getattr(self,"context_entries",None)
+                        if queue_ is not None:
+                            queue_.append(previous)
+                self.history.log(task["text"],translated,self.settings.target,
+                                 self.settings.engine,overwrite=overwrite)
+            except Exception as error:
+                print("翻译历史保存失败：",repr(error),flush=True)
         return True
 
     def _display_loop(self):
         seen=0
+        last_rendered=None
         while not self.closed:
             if self.settings.log_only:
                 time.sleep(self.DISPLAY_TICK)
@@ -250,6 +327,9 @@ class GoogleTranslateSink:
             if version!=seen:
                 seen=version
                 source,translated,choke=result
+                if not translated:
+                    time.sleep(self.DISPLAY_TICK)
+                    continue
                 show=getattr(self.settings,"display_sentences",0)
                 if show>0 and "[ERROR]" not in translated and "[WARNING]" not in translated:
                     with self.state_lock:
@@ -257,7 +337,10 @@ class GoogleTranslateSink:
                     prefix=self.history.previous_text(show,entries=previous)
                     if prefix:
                         translated=prefix+translated
-                self.overlay.translation(source,translated)
+                rendered=(source,translated)
+                if rendered != last_rendered:
+                    self.overlay.translation(source,translated)
+                    last_rendered=rendered
                 if choke:
                     time.sleep(self.COMPLETE_SENTENCE_CHOKE)
             time.sleep(self.DISPLAY_TICK)
@@ -287,6 +370,7 @@ class GoogleTranslateSink:
                          self.settings.target!=settings.target)
                 self.settings=settings
                 self.target=settings.target
+                self.preview_cache=None
                 if isinstance(self.api,TranslationAPI):
                     # Do not mutate a request object another worker may be
                     # using. Rebuild it with the same transport hook.
@@ -295,18 +379,18 @@ class GoogleTranslateSink:
                     self.api.settings=settings
                 if changed:
                     self.context_entries.clear()
+                    self.final_dispatched_generation=0
+                    self.last_queued_key=None
                     if hasattr(self,"original_caption"):
                         self.original_caption=""
                     if hasattr(self,"idle_count"):
                         self.idle_count=0
                     if hasattr(self,"sync_count"):
                         self.sync_count=0
-            with self.output_lock:
-                self.output=("", "", False)
-                self.output_version+=1
+            # Do not blank an otherwise good subtitle during a hot swap.
         overlay=getattr(self,"overlay",None)
-        if overlay is not None:
-            overlay.translation("","[Paused]" if settings.log_only else "")
+        if overlay is not None and settings.log_only:
+            overlay.translation("","[Paused]")
 
     def set_log_only(self,value):
         self.settings.log_only=bool(value)

@@ -229,15 +229,16 @@ class UpstreamSchedulerContracts(unittest.TestCase):
         sink.tasks=[]
         return sink
 
-    def test_final_segments_reconstructed_without_touching_asr(self):
+    def test_final_segments_join_without_inventing_sentence_boundary(self):
         sink=self.minimal()
         sink.final("昨日は雨だった")
-        self.assertEqual("昨日は雨だった。",sink._sync_once())
+        self.assertIsNone(sink._sync_once(now=sink.last_final_at+.1))
         sink.partial("今日は晴れ")
-        self.assertEqual("昨日は雨だった。今日は晴れ",sink.observed_text)
-        sink.final("今日は晴れ")
-        self.assertEqual("昨日は雨だった。今日は晴れ。",sink.observed_text)
-        self.assertEqual("今日は晴れ。",sink._sync_once())
+        self.assertEqual("昨日は雨だった今日は晴れ",sink.observed_text)
+        sink.final("今日は晴れ。")
+        self.assertEqual("昨日は雨だった今日は晴れ。",sink.observed_text)
+        self.assertEqual("昨日は雨だった今日は晴れ。",
+                         sink._sync_once(now=sink.last_final_at+.1))
 
     def test_context_queue_only_from_non_overwritten_previous_log(self):
         with tempfile.TemporaryDirectory() as tmp:
