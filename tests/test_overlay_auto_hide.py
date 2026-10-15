@@ -152,6 +152,8 @@ class OverlayAutoHideTests(unittest.TestCase):
             overlay._poll()
         start.assert_not_called()
 
+    @unittest.skipIf(os.environ.get("GITHUB_ACTIONS") == "true",
+                     "Real Tk widgets require an interactive Windows desktop")
     def test_new_overlay_defaults_to_auto_hide_and_settings_checkbox_exists(self):
         # Real Tk widget construction verifies the checkbox is actually shown
         # and that the setting is bound to its variable.
