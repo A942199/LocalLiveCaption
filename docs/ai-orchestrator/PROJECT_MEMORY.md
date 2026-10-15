@@ -30,3 +30,11 @@ Add only verified project decisions and outcomes; do not include secrets.
 - Tested code HEAD: `92bcd20e4a59039fd89588500f14c5be3b31c114`
 - Verified knowledge: Python 3.11 Windows CI requires UTF-8 stdout/stderr (PYTHONUTF8, PYTHONIOENCODING); GitHub hosted runner is noninteractive and skips exactly two actual Tk widget tests, which continue to run on an interactive Windows desktop. 110 discovered tests, 108 executed and passed, 2 explicitly skipped.
 - Source task: `docs/ai-orchestrator/runs/python-ci-quality-20261016/report.md`
+
+<!-- ai-orchestrator:checkpoint:v1:translation-release-qa-20261016 -->
+## Durable checkpoint: translation-release-qa-20261016
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `b4158a3f4b6c805d972bf7b4a94d02ced6ea4a86`
+- Verified knowledge to retain: Avoid Tk Chinese label reconfiguration when text unchanged, unnecessary repeated alpha updates, and ASR status clearing retained translation. In Windows nested Python subprocess tests propagate PYTHONUTF8=1. Real six-clip FLEURS CER is bounded ASR smoke evidence, not translation accuracy validation. Main merge requires separate independent review and GitHub protection gate verification.
+- Source task: `docs/ai-orchestrator/runs/translation-release-qa-20261016/report.md`
+
