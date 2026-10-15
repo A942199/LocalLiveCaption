@@ -24,3 +24,9 @@ Add only verified project decisions and outcomes; do not include secrets.
 - Verified knowledge to retain: Caption blanking is not caused by normal Partial/Final in tested cases; distinguish translation publication (nonempty), Tk root hidden auto-hide after 6s and ASR status kind=s clearing label. Frequent Partial triggers repeated text configure (19 for 24 Partial) and may be worth future UI redraw optimization. Keep explicit auto-hide semantics and disable the setting if users need persistent overlay.
 - Source task: `docs/ai-orchestrator/runs/translation-flicker-acceptance-20261015/report.md`
 
+<!-- ai-orchestrator:checkpoint:v1:python-ci-quality-20261016 -->
+## Durable checkpoint: python-ci-quality-20261016
+- Outcome: `AWAITING_REVIEW`
+- Tested code HEAD: `92bcd20e4a59039fd89588500f14c5be3b31c114`
+- Verified knowledge: Python 3.11 Windows CI requires UTF-8 stdout/stderr (PYTHONUTF8, PYTHONIOENCODING); GitHub hosted runner is noninteractive and skips exactly two actual Tk widget tests, which continue to run on an interactive Windows desktop. 110 discovered tests, 108 executed and passed, 2 explicitly skipped.
+- Source task: `docs/ai-orchestrator/runs/python-ci-quality-20261016/report.md`
