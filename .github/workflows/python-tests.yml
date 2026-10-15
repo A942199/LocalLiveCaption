@@ -8,10 +8,10 @@ on:
       - 'tests/**'
       - 'requirements.txt'
       - '.github/workflows/python-tests.yml'
+      - 'docs/ai-orchestrator/**'
   push:
     branches:
       - main
-      - 'agent/**'
     paths:
       - 'live-caption-ja.pyw'
       - 'translation/**'
