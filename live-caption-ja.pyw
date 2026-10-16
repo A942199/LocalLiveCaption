@@ -1781,6 +1781,39 @@ _HESITATION_ENDINGS = (
 )
 
 
+def _should_soft_maxseg_cut(seg_len, silence, max_seg, search_window, min_pause):
+    """Allow a small natural pause to finish a near-cap segment earlier."""
+    return (0 < search_window < max_seg
+            and max_seg - search_window <= seg_len < max_seg
+            and silence >= min_pause)
+
+
+def _reconcile_boundary_text(previous, current, overlap_samples, sample_rate, bridge_text=""):
+    """Remove only well-evidenced repeat text at an acoustically overlapping seam.
+
+    Exact matches require >=3 characters and are bounded by overlap audio length.
+    A 1-2 character match needs an independently recognized bridge that spans
+    the old suffix into at least 3 new characters. Never rewrite prior Final.
+    """
+    if not previous or not current or overlap_samples <= 0 or sample_rate <= 0:
+        return current, 0
+    limit = min(len(previous), len(current),
+                max(3, min(12, int(overlap_samples * 12 / sample_rate + 0.999))))
+    for n in range(limit, 2, -1):
+        if previous.endswith(current[:n]):
+            return current[n:], n
+    if bridge_text:
+        for n in (2, 1):
+            if n > limit or previous[-n:] != current[:n]:
+                continue
+            for m in range(min(len(previous), len(bridge_text), 24), 2, -1):
+                if (previous.endswith(bridge_text[:m])
+                        and len(current[n:]) >= 3
+                        and bridge_text[m:].startswith(current[n:n + 3])):
+                    return current[n:], n
+    return current, 0
+
+
 def _endpoint_silence(base_silence, partial_text, punct_silence=0.40, hesitation_silence=1.10):
     """根据当前 partial 动态调整 speech-final 静音阈值。"""
     text = (partial_text or "").strip()
@@ -1875,6 +1908,7 @@ def _run_asr_impl(args, sink, stop, status, resources):
     partial_slot = [None]
     final_busy = [False]  # Give queued/in-flight Final work priority over new Partial calls.
     last_final_seg = [-1]
+    previous_final = {"seg": -1, "text": ""}
     active_seg = [0]
     partial_live = {"seg": -1, "text": "", "stable": "", "updated": 0.0}
     partial_live_lock = threading.Lock()
@@ -1921,6 +1955,40 @@ def _run_asr_impl(args, sink, stop, status, resources):
                 report_asr_error(exc)
                 time.sleep(0.15)
 
+    def commit_final_text(job, text):
+        """Commit a Final once. Reconcile only text from verified hard-cut overlap."""
+        text = _clean(text)
+        overlap = job.get("overlap_samples", 0)
+        if (text and overlap > 0 and previous_final["text"]
+                and previous_final["seg"] == job["seg"] - 1):
+            prior = previous_final["text"]
+            reconciled, removed = _reconcile_boundary_text(prior, text, overlap, SR)
+            if removed == 0 and job.get("bridge_audio") is not None:
+                # Extra ASR is reserved for a plausible 1-2 char split-word seam.
+                weak = any(prior.endswith(text[:n]) for n in (2, 1)
+                           if len(text) >= n and len(prior) >= n)
+                if weak:
+                    try:
+                        bridge = transcribe_final_with_retries(job["bridge_audio"])
+                    except Exception as exc:
+                        report_asr_error(exc)
+                    else:
+                        reconciled, removed = _reconcile_boundary_text(
+                            prior, text, overlap, SR, _clean(bridge))
+            text = reconciled
+        last_final_seg[0] = job["seg"]
+        previous_final.update({"seg": job["seg"], "text": text})
+        if text:
+            try:
+                be.add_context(text)
+            except Exception as exc:
+                print("ASR 上下文更新失败:", repr(exc), flush=True)
+            try:
+                sink.final(text, job["t_start"], job["t_end"])
+            except Exception as exc:
+                print("Final 字幕输出失败:", repr(exc), flush=True)
+        return text
+
     def worker_final():
         while True:
             with cv:
@@ -1945,18 +2013,8 @@ def _run_asr_impl(args, sink, stop, status, resources):
                             pass
                     log_dbg(job, "", t0, time.time())
                     continue
+                text = commit_final_text(job, text)
                 t1 = time.time()
-                last_final_seg[0] = job["seg"]
-                if text:
-                    text = _clean(text)
-                    try:
-                        be.add_context(text)
-                    except Exception as exc:
-                        print("ASR 上下文更新失败:", repr(exc), flush=True)
-                    try:
-                        sink.final(text, job["t_start"], job["t_end"])
-                    except Exception as exc:
-                        print("Final 字幕输出失败:", repr(exc), flush=True)
                 log_dbg(job, text, t0, t1, False)
             finally:
                 with cv:
@@ -1982,6 +2040,10 @@ def _run_asr_impl(args, sink, stop, status, resources):
             t1 = time.time()
             if job["seg"] <= last_final_seg[0] or job["seg"] != active_seg[0]:
                 continue                          # final/切句后到达的旧 partial 直接作废
+            if (job.get("overlap_samples", 0) > 0
+                    and previous_final["seg"] == job["seg"] - 1):
+                text, _ = _reconcile_boundary_text(
+                    previous_final["text"], text, job["overlap_samples"], SR)
             if job["seg"] != stabilizer_seg[0]:
                 partial_stabilizer.reset()
                 stabilizer_seg[0] = job["seg"]
@@ -1998,9 +2060,18 @@ def _run_asr_impl(args, sink, stop, status, resources):
 
     ths = [threading.Thread(target=worker_final, daemon=True), threading.Thread(target=worker_partial, daemon=True)]
 
-    def submit(kind, audio, seg, t_start, t_end, reason=None):
-        job = {"kind": kind, "audio": audio, "seg": seg, "t_start": t_start, "t_end": t_end,
-               "t_q": time.time(), "reason": reason}
+    def submit(kind, audio, seg, t_start, t_end, reason=None,
+               overlap_samples=0, bridge_tail=None):
+        job = {"kind": kind, "audio": audio, "seg": seg,
+               "t_start": t_start + (overlap_samples / SR if kind == "final" else 0),
+               "t_end": t_end, "t_q": time.time(), "reason": reason}
+        if overlap_samples > 0:
+            job["overlap_samples"] = overlap_samples
+            if kind == "final" and bridge_tail is not None:
+                head = audio[overlap_samples:overlap_samples + bridge_right_samples]
+                if len(head) >= int(.35 * SR):
+                    job["bridge_audio"] = np.concatenate((
+                        bridge_tail[-bridge_left_samples:], head))
         with cv:
             if kind == "final":
                 while len(final_q) >= max_queued_finals:
@@ -2033,6 +2104,17 @@ def _run_asr_impl(args, sink, stop, status, resources):
     silence_samples = 0
     preroll_samples = int(args.vad_speech_pad_ms * SR / 1000)
     preroll = _SpeechPreroll(preroll_samples)
+    soft_search = max(0.0, float(getattr(args, "maxseg_soft_window", 2.5)))
+    soft_pause = max(.10, float(getattr(args, "maxseg_soft_silence", .16)))
+    overlap_samples = min(int(.8 * SR), max(0, int(
+        float(getattr(args, "maxseg_overlap_ms", 400)) * SR / 1000)))
+    bridge_left_samples = int(1.2 * SR)
+    bridge_right_samples = int(.8 * SR)
+    boundary_cached_audio = None
+    boundary_cached_tail = None
+    boundary_silence_samples = 0
+    current_overlap_samples = 0
+    current_bridge_tail = None
     last_seq = -1
     run_peak = 0.0     # 自动增益：loopback 是系统音量后的信号，音量小时峰值可能只有 0.01
     t_run0 = time.monotonic()
@@ -2081,7 +2163,8 @@ def _run_asr_impl(args, sink, stop, status, resources):
             if last_seq >= 0 and seq != last_seq + 1:
                 print(f"音频队列溢出：丢弃 {seq - last_seq - 1} 块，重新同步 VAD。", flush=True)
                 if seg_start is not None and len(buf) > 0:
-                    submit("final", buf.copy(), seg_id, seg_start, last_speech, "overflow")
+                    submit("final", buf.copy(), seg_id, seg_start, last_speech, "overflow",
+                           current_overlap_samples, current_bridge_tail)
                 seg_id += 1
                 active_seg[0] = seg_id
                 buf = np.zeros(0, dtype=np.float32)
@@ -2089,6 +2172,9 @@ def _run_asr_impl(args, sink, stop, status, resources):
                 seg_start = last_speech = None
                 silence_samples = 0
                 preroll.clear()
+                boundary_cached_audio = boundary_cached_tail = None
+                boundary_silence_samples = current_overlap_samples = 0
+                current_bridge_tail = None
                 vad.reset()
                 with partial_live_lock:
                     partial_live.update({"seg": seg_id, "text": "", "stable": "", "updated": now})
@@ -2107,7 +2193,17 @@ def _run_asr_impl(args, sink, stop, status, resources):
                 speech = vad(win)
                 if speech:
                     if seg_start is None:
-                        buf = np.concatenate((preroll.take(), win))
+                        before = preroll.take()
+                        if boundary_cached_audio is not None:
+                            current_overlap_samples = len(boundary_cached_audio)
+                            current_bridge_tail = boundary_cached_tail
+                            buf = np.concatenate((boundary_cached_audio, before, win))
+                        else:
+                            current_overlap_samples = 0
+                            current_bridge_tail = None
+                            buf = np.concatenate((before, win))
+                        boundary_cached_audio = boundary_cached_tail = None
+                        boundary_silence_samples = 0
                         seg_start, last_partial = win_time - len(buf) / SR, win_time
                         preroll.clear()
                     else:
@@ -2119,6 +2215,10 @@ def _run_asr_impl(args, sink, stop, status, resources):
                     silence_samples += len(win)
                 else:
                     preroll.add(win)
+                    if boundary_cached_audio is not None:
+                        boundary_silence_samples += len(win)
+                        if boundary_silence_samples >= int(.6 * SR):
+                            boundary_cached_audio = boundary_cached_tail = None
 
                 if seg_start is None:
                     continue
@@ -2139,22 +2239,34 @@ def _run_asr_impl(args, sink, stop, status, resources):
                 reason = None
                 if (sil >= endpoint_silence and seg_len >= args.min_seg) or sil >= hard_silence:
                     reason = "silence"
+                elif _should_soft_maxseg_cut(seg_len, sil, args.max_seg, soft_search, soft_pause):
+                    reason = "soft_silence"
                 elif seg_len >= args.max_seg:
                     reason = "maxlen"
                 if reason:
-                    submit("final", buf.copy(), seg_id, seg_start, last_speech, reason)
+                    submit("final", buf.copy(), seg_id, seg_start, last_speech, reason,
+                           current_overlap_samples, current_bridge_tail)
+                    if reason == "maxlen" and overlap_samples > 0:
+                        boundary_cached_audio = buf[-overlap_samples:].copy()
+                        boundary_cached_tail = buf[-bridge_left_samples:].copy()
+                        boundary_silence_samples = 0
+                    else:
+                        boundary_cached_audio = boundary_cached_tail = None
                     seg_id += 1
                     active_seg[0] = seg_id
                     with partial_live_lock:
                         partial_live.update({"seg": seg_id, "text": "", "stable": "", "updated": win_time})
                     buf = np.zeros(0, dtype=np.float32)
                     silence_samples = 0
+                    current_overlap_samples = 0
+                    current_bridge_tail = None
                     seg_start = last_speech = None
                 elif not args.no_partial and win_time - last_partial >= args.partial_every and seg_len >= 1.0:
                     last_partial = win_time
                     # 非 stateful ASR 使用完整当前 utterance。RTX 3090 的实测性能足以支撑
                     # 0.6s cadence，同时避免 rolling window 无时间戳对齐造成重复/错拼。
-                    submit("partial", buf.copy(), seg_id, seg_start, last_speech)
+                    submit("partial", buf.copy(), seg_id, seg_start, last_speech,
+                           overlap_samples=current_overlap_samples)
     finally:
         stop.set()
         try:
@@ -2186,8 +2298,14 @@ def _run_asr_impl(args, sink, stop, status, resources):
         if len(buf) > 0 and seg_start is not None:
             t_end = last_speech if last_speech is not None else seg_start + len(buf) / SR
             tail_job = {"kind": "final", "audio":buf.copy(), "seg":seg_id,
-                        "t_start":seg_start, "t_end":t_end, "t_q":time.time(),
-                        "reason":"shutdown"}
+                        "t_start":seg_start + current_overlap_samples / SR,
+                        "t_end":t_end, "t_q":time.time(), "reason":"shutdown"}
+            if current_overlap_samples:
+                tail_job["overlap_samples"] = current_overlap_samples
+                head = buf[current_overlap_samples:current_overlap_samples + bridge_right_samples]
+                if current_bridge_tail is not None and len(head) >= int(.35 * SR):
+                    tail_job["bridge_audio"] = np.concatenate((
+                        current_bridge_tail[-bridge_left_samples:], head))
             t0 = time.time()
             try:
                 text = transcribe_final_with_retries(tail_job["audio"])
@@ -2199,13 +2317,8 @@ def _run_asr_impl(args, sink, stop, status, resources):
                     except Exception:
                         pass
             else:
+                text = commit_final_text(tail_job, text)
                 t1 = time.time()
-                if text:
-                    text = _clean(text)
-                    try:
-                        sink.final(text, seg_start, t_end)
-                    except Exception as exc:
-                        print("最后一段字幕输出失败:", repr(exc), flush=True)
                 log_dbg(tail_job, text, t0, t1)
 
 
@@ -2300,6 +2413,9 @@ def main():
     ap.add_argument("--slots", type=int, default=2, help="llama-server 并行槽位数")
     ap.add_argument("--min-seg", type=float, default=1.0, help="短于这个秒数的句子先不切，等下一段一起")
     ap.add_argument("--max-seg", type=float, default=6.0, help="一句最长多少秒强制切分（一行字幕 20~30 字）")
+    ap.add_argument("--maxseg-soft-window", type=float, default=2.5, help="达到最长句段前，提前多少秒允许短静音自然切句")
+    ap.add_argument("--maxseg-soft-silence", type=float, default=0.16, help="接近最长句段时允许切段的短静音秒数")
+    ap.add_argument("--maxseg-overlap-ms", type=float, default=400, help="强制切段的下段音频上下文毫秒数（设 0 禁用）")
     ap.add_argument("--max-gain", type=float, default=60.0, help="自动增益上限倍数")
     ap.add_argument("--out", default=None, help="追加写入 txt")
     ap.add_argument("--srt", default=None, help="追加写入 srt")
