@@ -36,3 +36,11 @@ A task checkpoint is not proof of tests, independent review, CI or merge.
 - Summary: Implemented soft VAD pause splitting near max_seg, bounded 400ms previous-audio carry on forced cut, conservative Japanese text suffix/prefix de-duplication, optional 1–2 character seam bridge ASR, and single Final commit without rewriting older Final. Changed live-caption-ja.pyw, README_PYTHON.md and added 8 regression tests. Full Windows Python 3.11 mocked suite 113/113 PASSED after last code change; git diff --check passed. Code is on draft PR #11; main is unchanged. Japanese real-audio CER, RTX 3090 latency and overlay smoke not verified; CLI --help attempt timed out and was not proven; independent review/CI not established.
 - Evidence references: 2 (Issue #10 and PR #11).
 This is a task checkpoint, not a merged default-branch state.
+
+<!-- ai-orchestrator:checkpoint:v1:asr-maxseg-real-audio-20261016 -->
+## Task status update: asr-maxseg-real-audio-20261016
+- Task outcome: `COMPLETED` (real speech validation); **candidate PR #11 release decision: FAIL**, keep draft/unmerged.
+- Code HEAD before memory writes: `e1b5fc51bba447f7c4380b44a4f3fefde2319faf`.
+- Summary: 48 FLEURS Japanese long clips (937.5s, 3548 reference characters), 384 real-audio test cases on actual RTX 3090 Qwen GGUF + Silero VAD: main CER 6.623%/10.316% at max_seg 16s/6s; PR11 default overlap 7.018%/13.613%; disabling overlap 6.652%/10.231%. Additional four 29.52s real-time paced Partial/Final runs completed with similar negative accuracy trend. Actual Tkinter and physical WASAPI were not tested. GPU inference was real, WASAPI input was injected. PR11 remains unsuitable for default enablement.
+- Evidence: https://github.com/A942199/LocalLiveCaption/pull/11 and `docs/ai-orchestrator/runs/asr-maxseg-real-audio-20261016/report.md`.
+This checkpoint is not a merged/default-branch release approval.
