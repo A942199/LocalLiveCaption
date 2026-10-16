@@ -28,3 +28,11 @@ A task checkpoint is not proof of tests, independent review, CI or merge.
 - Outcome: `BLOCKED`. PR #9 head `cd4d381c7ea4fd703d213122daac284e860de10c` remains OPEN, unmerged; remote `main` unchanged at `8b66779a1066a55909239fc84bd9c0388cf4a409` when verified.
 - Prerequisites not satisfied: GitHub Build and Test skipped, no independent approval, branch protection details inaccessible (403). This was a recheck after user authorized direct merge.
 - No automatic override, forced push, or conditional merge action performed. Two-file ASR patch remains on code PR #9.
+
+<!-- ai-orchestrator:checkpoint:v1:asr-maxseg-boundary-20261016 -->
+## Task status update: asr-maxseg-boundary-20261016
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `e1b5fc51bba447f7c4380b44a4f3fefde2319faf`
+- Summary: Implemented soft VAD pause splitting near max_seg, bounded 400ms previous-audio carry on forced cut, conservative Japanese text suffix/prefix de-duplication, optional 1–2 character seam bridge ASR, and single Final commit without rewriting older Final. Changed live-caption-ja.pyw, README_PYTHON.md and added 8 regression tests. Full Windows Python 3.11 mocked suite 113/113 PASSED after last code change; git diff --check passed. Code is on draft PR #11; main is unchanged. Japanese real-audio CER, RTX 3090 latency and overlay smoke not verified; CLI --help attempt timed out and was not proven; independent review/CI not established.
+- Evidence references: 2 (Issue #10 and PR #11).
+This is a task checkpoint, not a merged default-branch state.
