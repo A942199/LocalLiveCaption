@@ -1340,6 +1340,10 @@ QWEN_LANG = {"zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean",
              "it": "Italian", "ar": "Arabic", "th": "Thai", "vi": "Vietnamese", "id": "Indonesian"}
 
 
+class ASRTruncatedError(RuntimeError):
+    """llama.cpp stopped at the token limit before completing ASR output."""
+
+
 class LlamaBackend:
     """llama.cpp llama-server (b10941+ 支持 Qwen3-ASR 的 mtmd 音频)。"""
     name = "llama.cpp"
@@ -1597,6 +1601,7 @@ class LlamaBackend:
 
     def transcribe(self, audio):
         import json
+        import urllib.error
         ctx = self.hot
         history = self._context_text()
         if history:
@@ -1605,33 +1610,41 @@ class LlamaBackend:
                 {"role": "user", "content": [{"type": "input_audio",
                                               "input_audio": {"data": self._wav_b64(audio), "format": "wav"}}]}]
         if self.lang:
-            # llama.cpp prefills the last assistant message. This matches the
-            # Qwen3-ASR forced-language prompt, instead of post-hoc filtering only.
             msgs.append({"role": "assistant", "content": f"language {self.lang}<asr_text>"})
-        # 与 server 侧 --cache-ram 0 保持一致，避免音频请求进入 prompt cache。
-        body = json.dumps({"messages": msgs, "max_tokens": self.max_tokens,
-                           "temperature": self.temperature, "cache_prompt": False}).encode()
-        import urllib.error
-        for attempt in range(2):
-            # A recovered borrowed server may move to a new private port.
-            req = self.urllib.Request(self.url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
-            generation = self._server_generation
-            try:
-                with self.urllib.urlopen(req, timeout=60) as r:
-                    out = json.loads(r.read().decode())
-                break
-            except (OSError, TimeoutError) as exc:
-                # Reject malformed requests without restarting a healthy model.
-                if (attempt or isinstance(exc, urllib.error.HTTPError) and exc.code < 500
-                        or not self._recover_server(generation)):
-                    raise
-        text = out["choices"][0]["message"]["content"]
-        # 模型输出形如 "language Chinese<asr_text>正文"
-        if "<asr_text>" in text:
-            lang, text = text.split("<asr_text>", 1)
-            if self.lang and self.lang not in lang:
-                return ""      # 指定了语言，但这段判成别的语言（多半是音乐/噪声），丢掉
-        return _clean(text)
+        # A length-limited response is NOT a valid final transcript. Retry
+        # at most once with a larger budget; avoid silently losing the suffix.
+        token_budget = self.max_tokens
+        for decode_attempt in range(2):
+            body = json.dumps({"messages": msgs, "max_tokens": token_budget,
+                               "temperature": self.temperature, "cache_prompt": False}).encode()
+            for attempt in range(2):
+                # Borrowed servers may move to a private port upon recovery.
+                req = self.urllib.Request(self.url + "/v1/chat/completions", data=body,
+                                          headers={"Content-Type": "application/json"})
+                generation = self._server_generation
+                try:
+                    with self.urllib.urlopen(req, timeout=60) as r:
+                        out = json.loads(r.read().decode())
+                    break
+                except (OSError, TimeoutError) as exc:
+                    if (attempt or isinstance(exc, urllib.error.HTTPError) and exc.code < 500
+                            or not self._recover_server(generation)):
+                        raise
+            choice = out["choices"][0]
+            if choice.get("finish_reason") == "length":
+                next_budget = min(1024, token_budget * 2)
+                if decode_attempt or next_budget <= token_budget:
+                    raise ASRTruncatedError(f"ASR output truncated (finish_reason=length, max_tokens={token_budget})")
+                token_budget = next_budget
+                continue
+            text = choice["message"]["content"]
+            # Model output can contain language Japanese<asr_text>...
+            if "<asr_text>" in text:
+                lang, text = text.split("<asr_text>", 1)
+                if self.lang and self.lang not in lang:
+                    return ""  # Preserve existing noise/music rejection semantics.
+            return _clean(text)
+        raise ASRTruncatedError("ASR output truncated")
 
     def close(self):
         self._closed = True
@@ -1860,6 +1873,7 @@ def _run_asr_impl(args, sink, stop, status, resources):
     final_q = collections.deque()
     max_queued_finals = 16
     partial_slot = [None]
+    final_busy = [False]  # Give queued/in-flight Final work priority over new Partial calls.
     last_final_seg = [-1]
     active_seg = [0]
     partial_live = {"seg": -1, "text": "", "stable": "", "updated": 0.0}
@@ -1892,6 +1906,21 @@ def _run_asr_impl(args, sink, stop, status, resources):
             # Debug I/O is optional; never kill Final/Partial ASR workers.
             print("ASR 调试日志写入失败:", repr(exc), flush=True)
 
+    def transcribe_final_with_retries(audio):
+        """Final is accuracy-critical: bounded transient retry, never promote Partial."""
+        import urllib.error
+        for attempt in range(2):
+            try:
+                return be.transcribe(audio)
+            except ASRTruncatedError:
+                # Already retried with more tokens inside the backend.
+                raise
+            except (OSError, TimeoutError, RuntimeError) as exc:
+                if (attempt or isinstance(exc, urllib.error.HTTPError) and exc.code < 500):
+                    raise
+                report_asr_error(exc)
+                time.sleep(0.15)
+
     def worker_final():
         while True:
             with cv:
@@ -1900,37 +1929,50 @@ def _run_asr_impl(args, sink, stop, status, resources):
                 if not final_q:
                     return
                 job = final_q.popleft()
-                cv.notify_all()  # Release a producer waiting for final queue capacity.
+                final_busy[0] = True
+                cv.notify_all()
             t0 = time.time()
             try:
-                # Final 始终对完整 utterance 做 second pass，不复用 partial。
-                text = be.transcribe(job["audio"])
-            except Exception as e:
-                report_asr_error(e)
-                continue
-            t1 = time.time()
-            last_final_seg[0] = job["seg"]
-            if text:
-                text = _clean(text)
                 try:
-                    be.add_context(text)
+                    text = transcribe_final_with_retries(job["audio"])
                 except Exception as exc:
-                    print("ASR 上下文更新失败:", repr(exc), flush=True)
-                try:
-                    sink.final(text, job["t_start"], job["t_end"])
-                except Exception as exc:
-                    # One broken output sink must not discard all later finals.
-                    print("Final 字幕输出失败:", repr(exc), flush=True)
-            log_dbg(job, text, t0, t1, False)
+                    report_asr_error(exc)
+                    print(f"Final 识别失败：段 {job['seg']}，没有生成完整字幕：{exc!r}", flush=True)
+                    if status:
+                        try:
+                            status("⚠ Final 识别失败：可能缺少一句字幕")
+                        except Exception:
+                            pass
+                    log_dbg(job, "", t0, time.time())
+                    continue
+                t1 = time.time()
+                last_final_seg[0] = job["seg"]
+                if text:
+                    text = _clean(text)
+                    try:
+                        be.add_context(text)
+                    except Exception as exc:
+                        print("ASR 上下文更新失败:", repr(exc), flush=True)
+                    try:
+                        sink.final(text, job["t_start"], job["t_end"])
+                    except Exception as exc:
+                        print("Final 字幕输出失败:", repr(exc), flush=True)
+                log_dbg(job, text, t0, t1, False)
+            finally:
+                with cv:
+                    final_busy[0] = False
+                    cv.notify_all()
 
     def worker_partial():
         while not stop.is_set():
             with cv:
-                while partial_slot[0] is None and not stop.is_set():
+                while (partial_slot[0] is None or final_q or final_busy[0]) and not stop.is_set():
                     cv.wait(0.2)
                 if stop.is_set():
                     return
                 job, partial_slot[0] = partial_slot[0], None
+            if job["seg"] <= last_final_seg[0] or job["seg"] != active_seg[0]:
+                continue  # Skip already-finalized work before spending GPU time.
             t0 = time.time()
             try:
                 text = be.transcribe(job["audio"])
@@ -2038,7 +2080,7 @@ def _run_asr_impl(args, sink, stop, status, resources):
                     continue
             if last_seq >= 0 and seq != last_seq + 1:
                 print(f"音频队列溢出：丢弃 {seq - last_seq - 1} 块，重新同步 VAD。", flush=True)
-                if seg_start is not None and len(buf) > SR * 0.5:
+                if seg_start is not None and len(buf) > 0:
                     submit("final", buf.copy(), seg_id, seg_start, last_speech, "overflow")
                 seg_id += 1
                 active_seg[0] = seg_id
@@ -2141,16 +2183,21 @@ def _run_asr_impl(args, sink, stop, status, resources):
             th.join()
         # The unfinished utterance is always the last segment; emit it only
         # after all queued finals, preserving spoken order at shutdown.
-        if len(buf) > SR * 0.5 and seg_start is not None:
+        if len(buf) > 0 and seg_start is not None:
             t_end = last_speech if last_speech is not None else seg_start + len(buf) / SR
             tail_job = {"kind": "final", "audio":buf.copy(), "seg":seg_id,
                         "t_start":seg_start, "t_end":t_end, "t_q":time.time(),
                         "reason":"shutdown"}
             t0 = time.time()
             try:
-                text = be.transcribe(tail_job["audio"])
+                text = transcribe_final_with_retries(tail_job["audio"])
             except Exception as exc:
                 print("最后一段识别失败:", repr(exc), flush=True)
+                if status:
+                    try:
+                        status("⚠ 最后一段 ASR 失败：字幕可能缺失")
+                    except Exception:
+                        pass
             else:
                 t1 = time.time()
                 if text:
