@@ -14,3 +14,11 @@ A task checkpoint is not proof of tests, independent review, CI or merge.
 - Scoped tests: 48/48 ASR unittest tests passed; 4/4 new red-to-green tests passed. Stable-prefix 4/4 and isolated translation-scheduler 17/17 passed.
 - Blockers: full-suite timeout (Tkinter cleanup); single-file translation-bundle parity mismatch; missing real Japanese audio CER and GPU timing.
 - Next actions: review and merge the isolated changes only after safe integration of original dirty Python source, and benchmark sentence boundaries, Final loss, latency and CER.
+
+## Merge request `asr-final-reliability-merge-20261016`
+
+- Outcome: **BLOCKED**, not merged to `main`.
+- Code branch: `agent/asr-final-reliability-code-20261016`; PR #9: https://github.com/A942199/LocalLiveCaption/pull/9
+- Tested code SHA: `cd4d381c7ea4fd703d213122daac284e860de10c` (2 changed files; Python unittest 105/105, ASR 48/48 on Windows).
+- Release gate blockers: GitHub CI Build and Test skipped, no independent PR approvals, GitHub branch protection read unavailable (403). Actual `main` remains `8b66779a1066a55909239fc84bd9c0388cf4a409` when checked.
+- This PR #8 is documentation-only and must not be mistaken for the code patch. Original user dirty Windows working tree was not edited.
