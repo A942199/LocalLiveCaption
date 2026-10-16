@@ -17,3 +17,11 @@ Add only verified project decisions and outcomes; do not include secrets.
 - Scoped fixes: `finish_reason=length` handling plus one larger token-budget retry, bounded Final retry on transient failures, preservation of short active speech tails, Final-first admission of new Partial work and early stale-Partial filtering.
 - Evidence: four new Final reliability regressions failed before patch and passed after; all 48 ASR-specific unittests passed after patch. Translation scheduling and stable-prefix focused suites passed separately. Full GUI suite timed out with Tkinter finalizer exceptions; standalone single-file bundle parity had a pre-existing mismatch.
 - No real Japanese speech CER/GPU benchmark. Do not assert improved accuracy; no automatic main merge.
+
+## Run `asr-final-reliability-merge-20261016`
+
+- 2026-10-16: ASR-only code fixes were ported from the isolated local candidate to verified remote `main` baseline `8b66779a1066a55909239fc84bd9c0388cf4a409`, committed as `cd4d381c7ea4fd703d213122daac284e860de10c` and pushed to code PR #9 (`agent/asr-final-reliability-code-20261016`).
+- Candidate only changes `live-caption-ja.pyw` and `tests/test_asr_final_reliability.py`; full 105/105 and ASR 48/48 Windows mocked unittest suite passed.
+- PR #7's larger Python-only rewrite was not merged. This branch / PR #8 contains documentation only.
+- Requested `main` merge remains **blocked**: on PR #9 GitHub Build and Test was **skipped**, no independent PR review exists, and the branch protection endpoint returned 403. Actual remote `main` was not changed.
+- No live Japanese CER/GPU ASR benchmark was performed; manual release gate review is outstanding.
