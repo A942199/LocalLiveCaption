@@ -30,3 +30,24 @@ Add only verified project decisions and outcomes; do not include secrets.
 
 - User directly requested merging code PR #9 to `main` again. Real-time GitHub check verified code SHA `cd4d381c7ea4fd703d213122daac284e860de10c`, no merge conflicts, but `Build and Test` and `Create GitHub Release` are **skipped**, no independent PR reviews exist, and branch protection details returned HTTP 403. `main` was `8b66779a1066a55909239fc84bd9c0388cf4a409`.
 - Gate outcome: **BLOCKED**, **no merge executed**, even with explicit user request, due to mandatory fresh independent review, successful CI, and verified policy requirements. Original dirty local checkout untouched.
+
+<!-- ai-orchestrator:checkpoint:v1:asr-maxseg-boundary-20261016 -->
+## Durable checkpoint: asr-maxseg-boundary-20261016
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `e1b5fc51bba447f7c4380b44a4f3fefde2319faf`
+- Verified knowledge to retain: Near max_seg choose soft VAD pauses; for unavoidable maxlen carry at most 400ms audio into next utterance; conservatively de-duplicate direct Final overlaps, optionally run a short bridge ASR for verified 1–2 character seams, and never rewrite prior Final. Preserved original dirty Windows checkout.
+- Source task: `docs/ai-orchestrator/runs/asr-maxseg-boundary-20261016/report.md`
+
+<!-- ai-orchestrator:checkpoint:v1:asr-maxseg-real-audio-20261016 -->
+## Durable checkpoint: asr-maxseg-real-audio-20261016
+- Outcome: `COMPLETED` (real-audio testing only); PR #11 RELEASE DECISION: `FAIL / DO NOT MERGE`.
+- Tested code HEAD: `e1b5fc51bba447f7c4380b44a4f3fefde2319faf` vs baseline `667392f8db2bce5d54abfbd76a9dd19a06f5fc11`.
+- Verified knowledge to retain: Real FLEURS ja_jp human speech on local RTX 3090/Qwen GGUF and CPU Silero, 48 long clips/937.5s/384 audio trials, found PR11 default 400ms overlap worsens CER (16s: 6.623% main vs 7.018% PR; 6s: 10.316% vs 13.613%); disabling overlap restores near-baseline CER (6.652%, 10.231%). Four additional paced Partial/Final trials confirm same direction. Prior 113/113 mocked pass was insufficient. Maintain draft PR and avoid default overlap until redesign; no source-code mutations in validation.
+- Source task: `docs/ai-orchestrator/runs/asr-maxseg-real-audio-20261016/report.md`
+
+<!-- ai-orchestrator:checkpoint:v1:asr-maxseg-upstream-restore-20261016 -->
+## Durable checkpoint: asr-maxseg-upstream-restore-20261016
+- Outcome: `AWAITING_REVIEW`, draft PR #11 remains unmerged.
+- Tested code HEAD before memory commits: `3e331eddb9181b8710877ccf1a207aeda1d57859` against main `667392f8db2bce5d54abfbd76a9dd19a06f5fc11`.
+- Verified facts: restored original author's natural-silence complete-Partial reuse and maxlen always fresh full-ASR logic; removed previous PR11 soft/overlap/bridge code, retained present-day LocalLiveCaption queue/retry/dynamic endpointing. Full 110/110 Windows Python tests passed; 192 genuine FLEURS long-audio Qwen+Silero A/B tests without Partial yielded exactly matching texts and CER (16s 6.623%, 6s 10.316%). Four real-time-paced Partial tests showed reuse on normal silence saves one inference but can worsen CER on one tested clip (3.738% to 5.607% at 16s). No independent review, GitHub CI skipped; no automatic merge.
+- Source task: `docs/ai-orchestrator/runs/asr-maxseg-upstream-restore-20261016/report.md`

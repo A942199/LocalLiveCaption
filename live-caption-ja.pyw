@@ -1781,6 +1781,18 @@ _HESITATION_ENDINGS = (
 )
 
 
+def _select_reusable_partial(done, reason, speech_samples):
+    """Original author policy: reuse only a silence Final with full speech coverage.
+
+    A maxlen/overflow/shutdown Final always gets a fresh complete ASR pass.
+    Empty or incomplete hypotheses are never promoted.
+    """
+    if (reason == "silence" and done and done[1]
+            and done[0] >= speech_samples):
+        return done[1]
+    return None
+
+
 def _endpoint_silence(base_silence, partial_text, punct_silence=0.40, hesitation_silence=1.10):
     """根据当前 partial 动态调整 speech-final 静音阈值。"""
     text = (partial_text or "").strip()
@@ -1867,12 +1879,13 @@ def _run_asr_impl(args, sink, stop, status, resources):
     dbg = DebugLog(args.debug) if args.debug else None
     resources["debug"] = dbg
 
-    # ---- 双路径：Final 永远完整重识别；Partial 只留最新并走 full-context + recoverable stable prefix ----
+    # ---- 原作者逻辑：静音段可复用覆盖完整语音的 Partial；maxlen 必须完整重识别 ----
     cv = threading.Condition()
     final_input_done = threading.Event()
     final_q = collections.deque()
     max_queued_finals = 16
     partial_slot = [None]
+    partial_done = {}   # seg -> (last covered sample count, raw ASR text)
     final_busy = [False]  # Give queued/in-flight Final work priority over new Partial calls.
     last_final_seg = [-1]
     active_seg = [0]
@@ -1933,8 +1946,9 @@ def _run_asr_impl(args, sink, stop, status, resources):
                 cv.notify_all()
             t0 = time.time()
             try:
+                reused = job.get("text") is not None
                 try:
-                    text = transcribe_final_with_retries(job["audio"])
+                    text = job["text"] if reused else transcribe_final_with_retries(job["audio"])
                 except Exception as exc:
                     report_asr_error(exc)
                     print(f"Final 识别失败：段 {job['seg']}，没有生成完整字幕：{exc!r}", flush=True)
@@ -1957,7 +1971,7 @@ def _run_asr_impl(args, sink, stop, status, resources):
                         sink.final(text, job["t_start"], job["t_end"])
                     except Exception as exc:
                         print("Final 字幕输出失败:", repr(exc), flush=True)
-                log_dbg(job, text, t0, t1, False)
+                log_dbg(job, text, t0, t1, reused)
             finally:
                 with cv:
                     final_busy[0] = False
@@ -1982,6 +1996,9 @@ def _run_asr_impl(args, sink, stop, status, resources):
             t1 = time.time()
             if job["seg"] <= last_final_seg[0] or job["seg"] != active_seg[0]:
                 continue                          # final/切句后到达的旧 partial 直接作废
+            # Cache the raw full-utterance hypothesis, never the stabilized display.
+            # Late/stale Partial work was rejected by the checks above.
+            partial_done[job["seg"]] = (len(job["audio"]), text)
             if job["seg"] != stabilizer_seg[0]:
                 partial_stabilizer.reset()
                 stabilizer_seg[0] = job["seg"]
@@ -1998,9 +2015,9 @@ def _run_asr_impl(args, sink, stop, status, resources):
 
     ths = [threading.Thread(target=worker_final, daemon=True), threading.Thread(target=worker_partial, daemon=True)]
 
-    def submit(kind, audio, seg, t_start, t_end, reason=None):
+    def submit(kind, audio, seg, t_start, t_end, reason=None, text=None):
         job = {"kind": kind, "audio": audio, "seg": seg, "t_start": t_start, "t_end": t_end,
-               "t_q": time.time(), "reason": reason}
+               "t_q": time.time(), "reason": reason, "text": text}
         with cv:
             if kind == "final":
                 while len(final_q) >= max_queued_finals:
@@ -2031,6 +2048,7 @@ def _run_asr_impl(args, sink, stop, status, resources):
     vad_win = np.zeros(0, dtype=np.float32)
     WIN = int(SR * args.vad_win)
     silence_samples = 0
+    speech_samples = 0
     preroll_samples = int(args.vad_speech_pad_ms * SR / 1000)
     preroll = _SpeechPreroll(preroll_samples)
     last_seq = -1
@@ -2082,12 +2100,14 @@ def _run_asr_impl(args, sink, stop, status, resources):
                 print(f"音频队列溢出：丢弃 {seq - last_seq - 1} 块，重新同步 VAD。", flush=True)
                 if seg_start is not None and len(buf) > 0:
                     submit("final", buf.copy(), seg_id, seg_start, last_speech, "overflow")
+                partial_done.pop(seg_id, None)
                 seg_id += 1
                 active_seg[0] = seg_id
                 buf = np.zeros(0, dtype=np.float32)
                 vad_win = np.zeros(0, dtype=np.float32)
                 seg_start = last_speech = None
                 silence_samples = 0
+                speech_samples = 0
                 preroll.clear()
                 vad.reset()
                 with partial_live_lock:
@@ -2113,6 +2133,7 @@ def _run_asr_impl(args, sink, stop, status, resources):
                     else:
                         buf = np.concatenate((buf, win))
                     last_speech = win_time
+                    speech_samples = len(buf)
                     silence_samples = 0
                 elif seg_start is not None:
                     buf = np.concatenate((buf, win))
@@ -2142,13 +2163,16 @@ def _run_asr_impl(args, sink, stop, status, resources):
                 elif seg_len >= args.max_seg:
                     reason = "maxlen"
                 if reason:
-                    submit("final", buf.copy(), seg_id, seg_start, last_speech, reason)
+                    done = partial_done.pop(seg_id, None)
+                    reuse = _select_reusable_partial(done, reason, speech_samples)
+                    submit("final", buf.copy(), seg_id, seg_start, last_speech, reason, reuse)
                     seg_id += 1
                     active_seg[0] = seg_id
                     with partial_live_lock:
                         partial_live.update({"seg": seg_id, "text": "", "stable": "", "updated": win_time})
                     buf = np.zeros(0, dtype=np.float32)
                     silence_samples = 0
+                    speech_samples = 0
                     seg_start = last_speech = None
                 elif not args.no_partial and win_time - last_partial >= args.partial_every and seg_len >= 1.0:
                     last_partial = win_time
@@ -2157,6 +2181,7 @@ def _run_asr_impl(args, sink, stop, status, resources):
                     submit("partial", buf.copy(), seg_id, seg_start, last_speech)
     finally:
         stop.set()
+        partial_done.clear()
         try:
             stream.stop_stream()
         except Exception:

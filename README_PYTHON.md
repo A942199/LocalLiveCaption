@@ -27,7 +27,7 @@ Windows 本地实时字幕工具。本项目在开源项目基础上进行修改
 - 使用 **Qwen3-ASR-1.7B + llama.cpp + NVIDIA GPU** 在本地实时识别日语。
 - 说话过程中以完整当前 utterance 做 partial 识别；RTX 3090 实测性能足够，避免非 stateful ASR 使用 rolling window 时产生错拼。
 - 使用 **Recoverable Stable Prefix**：连续多次一致的日语前缀才锁定；单次冲突先抑制，若连续 3 次都冲突则自动解锁并纠正，既减少字幕抖动也避免早期错字被永久锁死。
-- 使用 **Fast Partial + Accurate Final** 双路径：partial 负责低延迟显示；句尾后用完整 utterance 再做一次 second-pass ASR，final 永远以完整重识别结果为准。
+- **沿用原作者的切段 / Final 复用策略**：自然静音满足结束条件时，若最新 Partial 已覆盖全部有效语音，可直接复用其原始完整识别结果作为 Final；否则重新识别。达到 `max_seg` 时必须完整重新识别当前段，随后清空音频缓冲，下一段不带重叠音频；不执行跨段去重或 Bridge 猜测修复。原有 Final 失败重试、任务队列和字幕稳定机制保留。
 - 使用 **Smart Endpointing**：普通静音、句末标点、日语犹豫/连接词使用不同的 speech-final 等待时间，并保留 max-seg 强制切分。
 - 默认使用 Google Translate 日译中；翻译设置支持 **11 种上游接口**、API 多配置档案、上下文、历史搜索/清空/CSV 全量导出和运行中热更新。
 - 翻译时机参考 LiveCaptions-Translator：
