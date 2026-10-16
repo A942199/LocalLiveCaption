@@ -52,3 +52,9 @@ This checkpoint is not a merged/default-branch release approval.
 - Tests: 110/110 full mock suite; 192 actual Japanese FLEURS human-audio GPU+Silero trials (48 clips at 16s/6s, main and candidate) with identical no-Partial CER of 6.623%/10.316%. Four paced live Partial+Final trials completed; silence Partial reuse confirmed but one 16s clip's CER was 3.738% baseline vs 5.607% candidate; this is a material release caveat.
 - Blockers: code reviewer independent approval absent, CI skipped, real GUI + physical WASAPI + live translation flicker untested. See `docs/ai-orchestrator/runs/asr-maxseg-upstream-restore-20261016/report.md` and PR #11 comment.
 This task checkpoint is not a release or merge approval.
+
+<!-- ai-orchestrator:checkpoint:v1:upstream-code-parity-audit-20261016 -->
+## Audit status: upstream-code-parity-audit-20261016
+- Task outcome: `COMPLETED`, source inspection and read-only CLI argument reproduction only; no production code changed. Upstream comparison SHA `794fea1fd50f34e55a6e1e1537aa1659af61fea1`; fork main `667392f8db2bce5d54abfbd76a9dd19a06f5fc11`; PR #11 tested code `3e331eddb9181b8710877ccf1a207aeda1d57859`.
+- Prioritize: H1 injected CLI flag overrides `--lang=auto` / `--out=custom.txt` and saved GUI language; H2 translation adds EOS punctuation to maxlen hardcut ASR segments without reason metadata; H3 silence-Partial reuse measured real-Japanese CER regression on one clip; H4 Python CI missing (current .NET workflow skipped).
+- Next: targeted tests for queue overflow, ASR stop/cancel, stale translation/UI events and VAD session compatibility. Full detail: `docs/ai-orchestrator/runs/upstream-code-parity-audit-20261016/report.md`. Report is an audit artifact and not a merge/release endorsement. Issue #12, PR #11 remains draft.
