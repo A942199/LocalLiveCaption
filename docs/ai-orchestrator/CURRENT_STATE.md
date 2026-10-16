@@ -16,3 +16,11 @@ The active task fixes verified ASR config, language, VAD, padding and transcript
 - Evidence references: 2
 This is a task checkpoint, not a merged default-branch state.
 
+<!-- ai-orchestrator:checkpoint:v1:asr-btsj-cer-20261015 -->
+## Task status update: asr-btsj-cer-20261015
+- Outcome: `BLOCKED`
+- Code HEAD before memory writes: `8fa21c1058476b7d7949f987bebe6196ebb1dae7`
+- Summary: Unable to run real pre/post Japanese CER: Temp BTSJ workspace had 138 directories and zero source files; the separately archived 1200s Japanese TTS original source MP3 is also missing. No current CER, deletion count, or subtitle-omission measure. No overlap modifications authorized without fixed corpus and human references.
+- Evidence references: 2
+This is a data blocker checkpoint, not a merged default-branch state.
+
