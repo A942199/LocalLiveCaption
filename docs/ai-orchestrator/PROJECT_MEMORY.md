@@ -25,3 +25,8 @@ Add only verified project decisions and outcomes; do not include secrets.
 - PR #7's larger Python-only rewrite was not merged. This branch / PR #8 contains documentation only.
 - Requested `main` merge remains **blocked**: on PR #9 GitHub Build and Test was **skipped**, no independent PR review exists, and the branch protection endpoint returned 403. Actual remote `main` was not changed.
 - No live Japanese CER/GPU ASR benchmark was performed; manual release gate review is outstanding.
+
+## Run `asr-final-reliability-direct-merge-20261016`
+
+- User directly requested merging code PR #9 to `main` again. Real-time GitHub check verified code SHA `cd4d381c7ea4fd703d213122daac284e860de10c`, no merge conflicts, but `Build and Test` and `Create GitHub Release` are **skipped**, no independent PR reviews exist, and branch protection details returned HTTP 403. `main` was `8b66779a1066a55909239fc84bd9c0388cf4a409`.
+- Gate outcome: **BLOCKED**, **no merge executed**, even with explicit user request, due to mandatory fresh independent review, successful CI, and verified policy requirements. Original dirty local checkout untouched.
