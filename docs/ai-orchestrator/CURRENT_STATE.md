@@ -28,3 +28,11 @@ A task checkpoint is not proof of tests, independent review, CI or merge.
 - Outcome: `BLOCKED`. PR #9 head `cd4d381c7ea4fd703d213122daac284e860de10c` remains OPEN, unmerged; remote `main` unchanged at `8b66779a1066a55909239fc84bd9c0388cf4a409` when verified.
 - Prerequisites not satisfied: GitHub Build and Test skipped, no independent approval, branch protection details inaccessible (403). This was a recheck after user authorized direct merge.
 - No automatic override, forced push, or conditional merge action performed. Two-file ASR patch remains on code PR #9.
+
+<!-- ai-orchestrator:checkpoint:v1:continuous20m-asr-ab-20261018 -->
+## Test-only status: continuous20m-asr-ab-20261018
+- Outcome: `COMPLETED` (local synthetic PCM 20min A/B ASR benchmark; no source-code changes).
+- Code HEAD before docs writes: `667392f8db2bce5d54abfbd76a9dd19a06f5fc11`; local tested worktree remained dirty, HEAD `e4d342030544b891d73a5c13c1142df31d24c0e4`.
+- Strict CER 17.1124% upstream / 14.8912% local; normalized CER 14.4724% / 12.1975%. 0 runtime errors. Final time coverage gaps 1 vs 5, not proof of five missing full utterances because FLEURS contains repeated utterances.
+- Evidence: https://github.com/A942199/LocalLiveCaption/issues/14 and `docs/ai-orchestrator/runs/continuous20m-asr-ab-20261018/report.md`.
+- Original 2026-10-10 novel 1200s MP3 missing, so cannot assert original recording retested. No CI, actual WASAPI, GUI, translation or merge performed.
