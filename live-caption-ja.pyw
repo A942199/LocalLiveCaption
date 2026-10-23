@@ -42,7 +42,9 @@ if _lc_sys.stdout is None or _lc_sys.stderr is None:
 if _lc_sys.stdin is None:
     _lc_sys.stdin = open(_lc_os.devnull, "r", encoding="utf-8")
 
-# Double-click defaults: fixed Japanese recognition and transcript output.
+# Double-click defaults: Japanese recognition and transcript output.
+# Preserve genuine user arguments: injected defaults must not shadow GUI choices.
+_LC_ORIGINAL_ARGS = tuple(_lc_sys.argv[1:])
 # argparse accepts both --option value and --option=value; preserve either form.
 def _lc_has_option(option):
     return any(arg == option or arg.startswith(option + "=") for arg in _lc_sys.argv[1:])
@@ -136,105 +138,6 @@ class Resampler:
         return np.interp(np.linspace(0, len(mono), n, endpoint=False), np.arange(len(mono)), mono).astype(np.float32)
 
 
-class _AudioChunkQueue:
-    """Bounded non-blocking audio ingress: no callback stalls or unlimited RAM."""
-    def __init__(self, max_chunks=128):
-        self._queue = queue.Queue(maxsize=max(1, int(max_chunks)))
-        self._lock = threading.Lock()
-        self._next_seq = 0
-        self.dropped = 0
-
-    def put(self, audio):
-        if not len(audio):
-            return
-        with self._lock:
-            item = (audio, time.time(), self._next_seq)
-            self._next_seq += 1
-            try:
-                self._queue.put_nowait(item)
-            except queue.Full:
-                self._queue.get_nowait()  # Keep the freshest audio for live captions.
-                self.dropped += 1
-                self._queue.put_nowait(item)
-
-    def get(self, timeout=0.5):
-        return self._queue.get(timeout=timeout)
-
-
-class _StreamingSileroVAD:
-    """Use Silero's ONNX recurrent state across calls, not fresh 200 ms clips."""
-    FRAME = 512
-    CONTEXT = 64
-
-    def __init__(self, model, threshold, min_speech_ms=100, min_silence_ms=200):
-        self.session = model.session
-        self.threshold = float(threshold)
-        # Avoid a near-zero exit threshold when the entry threshold is low.
-        self.low_threshold = max(0.01, self.threshold - min(0.15, self.threshold * 0.35))
-        self.min_speech_samples = int(SR * min_speech_ms / 1000)
-        self.min_silence_samples = int(SR * min_silence_ms / 1000)
-        self.reset()
-
-    def reset(self):
-        self.h = np.zeros((1, 1, 128), dtype=np.float32)
-        self.c = np.zeros((1, 1, 128), dtype=np.float32)
-        self.context = np.zeros(self.CONTEXT, dtype=np.float32)
-        self.pending = np.zeros(0, dtype=np.float32)
-        self.voiced_samples = 0
-        self.quiet_samples = 0
-        self.speaking = False
-
-    def __call__(self, window):
-        self.pending = np.concatenate((self.pending, window))
-        heard_speech = False
-        while len(self.pending) >= self.FRAME:
-            frame, self.pending = self.pending[:self.FRAME], self.pending[self.FRAME:]
-            feature = np.concatenate((self.context, frame))[None, :]
-            probs, self.h, self.c = self.session.run(
-                None, {"input": feature, "h": self.h, "c": self.c}
-            )
-            self.context = frame[-self.CONTEXT:].copy()
-            probability = float(np.asarray(probs).flat[0])
-            if probability >= self.threshold:
-                self.voiced_samples += self.FRAME
-                self.quiet_samples = 0
-                if self.voiced_samples >= self.min_speech_samples:
-                    self.speaking = True
-            elif probability < self.low_threshold:
-                self.voiced_samples = 0
-                self.quiet_samples += self.FRAME
-                if self.quiet_samples >= self.min_silence_samples:
-                    self.speaking = False
-            else:
-                # Hysteresis should tolerate brief uncertainty, not hold
-                # speech indefinitely when background sound stays in the band.
-                self.voiced_samples = 0
-                self.quiet_samples += self.FRAME
-                if self.quiet_samples >= max(self.min_silence_samples, SR // 2):
-                    self.speaking = False
-            heard_speech = heard_speech or self.speaking
-        return heard_speech
-
-
-class _SpeechPreroll:
-    """Keep exactly the requested number of pre-speech samples, independent of VAD window size."""
-    def __init__(self, n_samples):
-        self.n_samples = max(0, int(n_samples))
-        self.audio = np.zeros(0, dtype=np.float32)
-
-    def add(self, window):
-        if self.n_samples:
-            self.audio = np.concatenate((self.audio, window))[-self.n_samples:]
-
-    def take(self):
-        audio = self.audio
-        self.clear()
-        return audio
-
-    def clear(self):
-        self.audio = np.zeros(0, dtype=np.float32)
-
-
 def start_capture(pa, dev, audio_q, stop):
     ch = int(dev["maxInputChannels"])
     sr = int(dev["defaultSampleRate"])
@@ -251,12 +154,9 @@ def start_capture(pa, dev, audio_q, stop):
 
     stream = pa.open(format=pyaudio.paFloat32, channels=ch, rate=sr, input=True,
                      input_device_index=dev["index"], frames_per_buffer=int(sr * 0.1), stream_callback=cb)
-    try:
-        stream.start_stream()
-    except Exception:
-        stream.close()
-        raise
+    stream.start_stream()
     return stream
+
 
 
 # ============================ 输出：终端 / 文件 ============================
@@ -746,25 +646,25 @@ class OverlaySink:
         preset = {
             "asr_model": "Q8_0",
             "asr_language": "ja",
-            "context_enabled": False,
+            "context_enabled": True,
             "context_history": 1,
             "context_chars": 80,
-            "llama_ctx": 4096,
+            "llama_ctx": 8192,
             "slots": 2,
-            "max_tokens": 256,
+            "max_tokens": 200,
             "temperature": 0.0,
             "partial_every": 0.4,
             "stable_count": 3,
             "punct_silence": 0.40,
             "hesitation_silence": 1.10,
-            "silence": 0.80,
+            "silence": 0.50,
             "vad_win": 0.20,
-            "vad_threshold": 0.10,
+            "vad_threshold": 0.45,
             "vad_min_speech_ms": 100,
-            "vad_min_silence_ms": 100,
-            "vad_speech_pad_ms": 200,
-            "min_seg": 1.2,
-            "max_seg": 16.0,
+            "vad_min_silence_ms": 200,
+            "vad_speech_pad_ms": 100,
+            "min_seg": 1.0,
+            "max_seg": 6.0,
             "max_gain": 60.0,
         }
         for key, value in preset.items():
@@ -819,12 +719,10 @@ class OverlaySink:
         self.tk.Checkbutton(context_frame, text="启用前文上下文", variable=v["context_enabled"],
                             command=lambda: self._settings_changed("context_enabled")).grid(
                                 row=0, column=0, columnspan=4, sticky="w", padx=8, pady=(6, 2))
-        add_field(context_frame, 1, 0, "保留 final 句数", "context_history", 1, 5, 1)
-        add_field(context_frame, 1, 1, "最多字符数", "context_chars", 40, 1000, 20)
+        self.tk.Label(context_frame, text="原版前文：上一条 Final 末尾 80 字；输出固定 200 tokens / temperature 0",
+                      fg="#666666").grid(row=1, column=0, columnspan=4, sticky="w", padx=8, pady=4)
         add_field(context_frame, 2, 0, "llama ctx 总长度", "llama_ctx", 2048, 16384, 1024)
         add_field(context_frame, 2, 1, "并行 slots", "slots", 1, 4, 1)
-        add_field(context_frame, 3, 0, "最大输出 tokens", "max_tokens", 64, 512, 16)
-        add_field(context_frame, 3, 1, "temperature", "temperature", 0.0, 1.0, 0.05)
         self.tk.Label(context_frame, text="识别语言 (auto/ja)").grid(row=4, column=0, sticky="w", padx=8, pady=(2, 6))
         lang_box = ttk.Combobox(context_frame, textvariable=v["asr_language"],
                                  values=("auto", "ja"), width=12, state="readonly")
@@ -833,26 +731,21 @@ class OverlaySink:
 
         vad_frame = ttk.LabelFrame(outer, text="VAD")
         vad_frame.pack(fill="x", pady=(0, 8))
-        add_field(vad_frame, 0, 0, "阈值", "vad_threshold", 0.1, 0.9, 0.05)
-        add_field(vad_frame, 0, 1, "检测窗口 (s)", "vad_win", 0.1, 1.0, 0.05)
-        add_field(vad_frame, 1, 0, "最短语音 (ms)", "vad_min_speech_ms", 50, 1000, 50)
-        add_field(vad_frame, 1, 1, "最短静音 (ms)", "vad_min_silence_ms", 50, 2000, 50)
-        add_field(vad_frame, 2, 0, "语音 padding (ms)", "vad_speech_pad_ms", 0, 1000, 50)
+        add_field(vad_frame, 0, 0, "检测窗口 (s)", "vad_win", 0.1, 1.0, 0.05)
+        self.tk.Label(vad_frame, text="原版固定：阈值 0.45；语音 100 ms；静音 200 ms；padding 100 ms",
+                      fg="#666666").grid(row=1, column=0, columnspan=4, sticky="w", padx=8, pady=4)
 
         segment_frame = ttk.LabelFrame(outer, text="切句 / 实时性")
         segment_frame.pack(fill="x", pady=(0, 8))
         add_field(segment_frame, 0, 0, "partial 刷新 (s)", "partial_every", 0.2, 2.0, 0.05)
-        add_field(segment_frame, 0, 1, "Stable 连续次数", "stable_count", 2, 5, 1)
-        add_field(segment_frame, 1, 0, "普通句尾静音 (s)", "silence", 0.2, 2.0, 0.05)
-        add_field(segment_frame, 1, 1, "标点句尾静音 (s)", "punct_silence", 0.2, 1.5, 0.05)
-        add_field(segment_frame, 2, 0, "犹豫词静音 (s)", "hesitation_silence", 0.5, 2.5, 0.05)
+        add_field(segment_frame, 1, 0, "静音断句 (s)", "silence", 0.2, 2.0, 0.05)
         add_field(segment_frame, 2, 1, "最短句段 (s)", "min_seg", 0.2, 5.0, 0.1)
         add_field(segment_frame, 3, 0, "最长句段 (s，0=不强切)", "max_seg", 0.0, 30.0, 0.5)
         add_field(segment_frame, 3, 1, "自动增益上限", "max_gain", 1.0, 100.0, 1.0)
 
         note = self.tk.Label(
             outer,
-            text="这些参数会自动保存，并在下一次启动字幕程序时生效。命令行显式参数仍然优先。",
+            text="可编辑项下次启动生效；原版固定项不再提供无效控件。显式命令行参数优先。",
             fg="#666666", anchor="w",
         )
         note.pack(fill="x", pady=(2, 8))
@@ -1352,58 +1245,82 @@ QWEN_LANG = {"zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean",
              "it": "Italian", "ar": "Arabic", "th": "Thai", "vi": "Vietnamese", "id": "Indonesian"}
 
 
-class ASRTruncatedError(RuntimeError):
-    """llama.cpp stopped at the token limit before completing ASR output."""
+# ASR source: TerryKiddy/live-caption @ 794fea1fd50f34e55a6e1e1537aa1659af61fea1 (MIT license)
+def _add_nvidia_dlls():
+    base = os.path.join(sys.prefix, "Lib", "site-packages", "nvidia")
+    if not os.path.isdir(base):
+        return
+    for sub in os.listdir(base):
+        b = os.path.join(base, sub, "bin")
+        if os.path.isdir(b):
+            os.environ["PATH"] = b + os.pathsep + os.environ.get("PATH", "")
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(b)
+
+
+_add_nvidia_dlls()
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+import numpy as np
+import pyaudiowpatch as pyaudio
+
+
+class QwenBackend:
+    """Qwen3-ASR (transformers 后端)。context 参数可塞热词/上一句。"""
+    name = "Qwen3-ASR"
+
+    def __init__(self, model_name, lang, hotwords, use_context):
+        import torch, transformers
+        transformers.logging.set_verbosity_error()
+        from qwen_asr import Qwen3ASRModel
+        self.model = Qwen3ASRModel.from_pretrained(model_name, dtype=torch.bfloat16, device_map="cuda:0",
+                                                   max_inference_batch_size=4, max_new_tokens=256)
+        self.lang = QWEN_LANG.get(lang, lang) if lang else None
+        self.hot = hotwords or ""
+        self.use_context = use_context
+        self.last = ""
+
+    def warmup(self):
+        self.model.transcribe(audio=(np.zeros(SR, dtype=np.float32), SR), language=self.lang)
+
+    def transcribe(self, audio):
+        ctx = self.hot
+        if self.use_context and self.last:
+            ctx = (ctx + "\n" + self.last[-80:]).strip()
+        r = self.model.transcribe(audio=(audio, SR), context=ctx, language=self.lang)
+        return _clean(r[0].text) if r else ""
 
 
 class LlamaBackend:
-    """llama.cpp llama-server (b10941+ 支持 Qwen3-ASR 的 mtmd 音频)。"""
+    """llama.cpp llama-server (b10941+ 支持 Qwen3-ASR 的 mtmd 音频)，HTTP /completion + multimodal_data。
+    解码比 HF transformers 快好几倍。"""
     name = "llama.cpp"
 
-    def __init__(self, server_exe, model, mmproj, lang, hotwords, use_context, port=8765, url=None, slots=2,
-                 ctx_size=8192, context_history=1, context_chars=80, max_tokens=200, temperature=0.0):
+    def __init__(self, server_exe, model, mmproj, lang, hotwords, use_context, port=8765, url=None, slots=2):
         import subprocess, urllib.request, socket, json
         self.urllib = urllib.request
         self.lang = QWEN_LANG.get(lang, lang) if lang else None
         self.hot = hotwords or ""
         self.use_context = use_context
-        self.context_history = max(1, int(context_history))
-        self.context_chars = max(40, int(context_chars))
-        self.max_tokens = max(64, int(max_tokens))
-        self.temperature = max(0.0, min(1.0, float(temperature)))
-        self.history = []
+        self.last = ""
         self.proc = None
         self.job = None
-        self._closed = False
-        self._restart_lock = threading.Lock()
-        self._server_cmd = None
-        self._server_generation = 0
-        self._retry_after = 0.0
-        self._borrowed_fallback_cmd = None
-        self._reuse_slots = int(slots)
-        self._reuse_ctx_size = int(ctx_size)
         if url is None:
-            # Keep a private fallback recipe for reused local servers, but never
-            # terminate or take ownership of the other application's process.
-            cmd = [server_exe, "-m", model, "--mmproj", mmproj, "-ngl", "99", "--port", str(port),
-                   "-c", str(ctx_size), "--no-webui", "-np", str(slots),
-                   "--cache-ram", "0", "--no-cache-prompt", "--log-disable"]
+            # 端口上已经有一个跑着同一个模型的 server（上次没关干净）就直接复用；被别的东西占着就换端口
             existing = self._probe(f"http://127.0.0.1:{port}", model)
             if existing == "same":
                 self.url = f"http://127.0.0.1:{port}"
-                self._borrowed_fallback_cmd = cmd
                 print(f"复用已在运行的 llama-server :{port}")
             else:
                 if existing == "other":
                     with socket.socket() as sk:
                         sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
-                    cmd[cmd.index("--port") + 1] = str(port)
                 self.url = f"http://127.0.0.1:{port}"
-                self._server_cmd = cmd
+                cmd = [server_exe, "-m", model, "--mmproj", mmproj, "-ngl", "99", "--port", str(port),
+                       "-c", "8192", "--no-webui", "-np", str(slots), "--log-disable"]
                 self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                self.job = self._bind_job(self.proc)
-                self._server_generation += 1
+                self._bind_job(self.proc)
         else:
             self.url = url
         # 等 /health
@@ -1415,102 +1332,13 @@ class LlamaBackend:
                         break
             except Exception:
                 if self.proc is not None and self.proc.poll() is not None:
-                    code = self.proc.returncode
-                    self.close()
-                    raise RuntimeError("llama-server 启动失败（退出码 %s）" % code)
+                    raise RuntimeError("llama-server 启动失败（退出码 %s）" % self.proc.returncode)
                 time.sleep(0.5)
         else:
-            self.close()
             raise RuntimeError("llama-server 没起来")
 
-    def _wait_health(self, timeout=60):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._closed:
-                raise RuntimeError("ASR backend is closing")
-            if self.proc is not None and self.proc.poll() is not None:
-                raise RuntimeError(f"llama-server exited with status {self.proc.returncode}")
-            try:
-                with self.urllib.urlopen(self.url + "/health", timeout=2) as response:
-                    if response.status == 200:
-                        return
-            except OSError:
-                pass
-            time.sleep(0.4)
-        raise RuntimeError("llama-server health check timed out")
-
-    def _stop_owned_server(self):
-        if self.proc is not None:
-            try:
-                if self.proc.poll() is None:
-                    self.proc.terminate()
-                    try:
-                        self.proc.wait(timeout=3)
-                    except Exception:
-                        self.proc.kill()
-                        self.proc.wait(timeout=3)
-            except OSError as exc:
-                print("关闭 llama-server 失败:", repr(exc), flush=True)
-            finally:
-                self.proc = None
-        if self.job:
-            try:
-                import ctypes
-                from ctypes import wintypes
-                close_handle = ctypes.windll.kernel32.CloseHandle
-                close_handle.argtypes = [wintypes.HANDLE]
-                close_handle(self.job)
-            except Exception:
-                pass
-            self.job = None
-
-    def _recover_server(self, observed_generation):
-        """Only restart a server we launched; one worker performs the restart."""
-        import subprocess
-        if self._server_cmd is None and getattr(self, "_borrowed_fallback_cmd", None) is None:
-            return False  # Explicit --llama-url servers are never managed.
-        with self._restart_lock:
-            if self._closed:
-                return False
-            if observed_generation != self._server_generation:
-                return True  # Another worker already recovered this generation.
-            if time.monotonic() < self._retry_after:
-                return False
-            try:
-                self._wait_health(timeout=2 if self._server_cmd is None else 5)
-                return True  # A short transient outage; no restart needed.
-            except RuntimeError:
-                pass
-            print("ASR 服务失联，尝试重新启动本地 llama-server …", flush=True)
-            self._stop_owned_server()
-            if getattr(self, "_borrowed_fallback_cmd", None) is not None:
-                # The borrowed owner is gone/unhealthy. Start an independently
-                # owned server on a fresh port, avoiding collisions with the
-                # former owner or any unrelated listener on its original port.
-                import socket
-                with socket.socket() as sk:
-                    sk.bind(("127.0.0.1", 0))
-                    private_port = sk.getsockname()[1]
-                self._server_cmd = self._borrowed_fallback_cmd.copy()
-                self._server_cmd[self._server_cmd.index("--port") + 1] = str(private_port)
-                self._borrowed_fallback_cmd = None
-                self.url = f"http://127.0.0.1:{private_port}"
-            try:
-                self.proc = subprocess.Popen(
-                    self._server_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                self.job = self._bind_job(self.proc)
-                self._server_generation += 1
-                self._wait_health(timeout=60)
-                return True
-            except Exception:
-                self._retry_after = time.monotonic() + 5
-                self._stop_owned_server()
-                raise
-
-    def _probe(self, url, model, slots=None, ctx_size=None):
-        """Reuse only a demonstrably compatible local llama-server."""
+    def _probe(self, url, model):
+        """返回 'none'(端口空闲) / 'same'(同模型 server 在跑) / 'other'(端口被占但不是我们的)"""
         import json, socket
         with socket.socket() as sk:
             sk.settimeout(0.3)
@@ -1519,22 +1347,11 @@ class LlamaBackend:
         try:
             with self.urllib.urlopen(url + "/props", timeout=2) as r:
                 props = json.loads(r.read().decode())
-            server_model = props.get("model_path")
-            if not server_model or os.path.normcase(os.path.realpath(server_model)) != os.path.normcase(os.path.realpath(model)):
-                return "other"
-            slots = self._reuse_slots if slots is None and hasattr(self, "_reuse_slots") else slots
-            ctx_size = self._reuse_ctx_size if ctx_size is None and hasattr(self, "_reuse_ctx_size") else ctx_size
-            if slots is not None and ctx_size is not None:
-                observed_slots = props.get("total_slots")
-                generation = props.get("default_generation_settings") or {}
-                observed_slot_ctx = generation.get("n_ctx")
-                if (observed_slots != slots or not isinstance(observed_slot_ctx, int)
-                        or observed_slot_ctx * slots != ctx_size
-                        or not (props.get("modalities") or {}).get("audio")):
-                    return "other"
-            return "same"
+            if os.path.basename(props.get("model_path", "")) == os.path.basename(model):
+                return "same"
         except Exception:
-            return "other"
+            pass
+        return "other"
 
     @staticmethod
     def _bind_job(proc):
@@ -1543,10 +1360,6 @@ class LlamaBackend:
             import ctypes
             from ctypes import wintypes
             k32 = ctypes.windll.kernel32
-            k32.CreateJobObjectW.restype = wintypes.HANDLE
-            k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
-            k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
-            k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
             class IO_COUNTERS(ctypes.Structure):
                 _fields_ = [(n, ctypes.c_ulonglong) for n in ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
                                                               "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
@@ -1560,38 +1373,18 @@ class LlamaBackend:
                             ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
                             ("PeakJobMemoryUsed", ctypes.c_size_t)]
             job = k32.CreateJobObjectW(None, None)
-            if not job:
-                raise ctypes.WinError()
-            try:
-                info = EXTENDED()
-                info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                if not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
-                    raise ctypes.WinError()
-                if not k32.AssignProcessToJobObject(job, wintypes.HANDLE(proc._handle)):
-                    raise ctypes.WinError()
-            except Exception:
-                k32.CloseHandle.argtypes = [wintypes.HANDLE]
-                k32.CloseHandle(job)
-                raise
-            return job  # One handle per backend; close it after terminating its server.
+            info = EXTENDED()
+            info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))  # JobObjectExtendedLimitInformation
+            k32.AssignProcessToJobObject(job, wintypes.HANDLE(proc._handle))
+            LlamaBackend._job_handle = job   # 保持引用，进程退出时句柄关闭 -> server 被杀
         except Exception as e:
             print("Job Object 绑定失败（server 可能不会随程序退出）:", e)
-            return None
-
-    def add_context(self, text):
-        if text:
-            self.history = (self.history + [text])[-self.context_history:]
-
-    def _context_text(self):
-        if not self.use_context or not self.history:
-            return ""
-        return "\n".join(self.history)[-self.context_chars:]
 
     def _prompt(self):
         ctx = self.hot
-        history = self._context_text()
-        if history:
-            ctx = (ctx + "\n" + history).strip()
+        if self.use_context and self.last:
+            ctx = (ctx + "\n" + self.last[-80:]).strip()
         p = ("<|im_start|>system\n" + ctx + "<|im_end|>\n"
              "<|im_start|>user\n<|audio_start|><__media__><|audio_end|><|im_end|>\n"
              "<|im_start|>assistant\n")
@@ -1613,55 +1406,30 @@ class LlamaBackend:
 
     def transcribe(self, audio):
         import json
-        import urllib.error
         ctx = self.hot
-        history = self._context_text()
-        if history:
-            ctx = (ctx + "\n" + history).strip()
+        if self.use_context and self.last:
+            ctx = (ctx + "\n" + self.last[-80:]).strip()
         msgs = [{"role": "system", "content": ctx},
                 {"role": "user", "content": [{"type": "input_audio",
                                               "input_audio": {"data": self._wav_b64(audio), "format": "wav"}}]}]
-        if self.lang:
-            msgs.append({"role": "assistant", "content": f"language {self.lang}<asr_text>"})
-        # A length-limited response is NOT a valid final transcript. Retry
-        # at most once with a larger budget; avoid silently losing the suffix.
-        token_budget = self.max_tokens
-        for decode_attempt in range(2):
-            body = json.dumps({"messages": msgs, "max_tokens": token_budget,
-                               "temperature": self.temperature, "cache_prompt": False}).encode()
-            for attempt in range(2):
-                # Borrowed servers may move to a private port upon recovery.
-                req = self.urllib.Request(self.url + "/v1/chat/completions", data=body,
-                                          headers={"Content-Type": "application/json"})
-                generation = self._server_generation
-                try:
-                    with self.urllib.urlopen(req, timeout=60) as r:
-                        out = json.loads(r.read().decode())
-                    break
-                except (OSError, TimeoutError) as exc:
-                    if (attempt or isinstance(exc, urllib.error.HTTPError) and exc.code < 500
-                            or not self._recover_server(generation)):
-                        raise
-            choice = out["choices"][0]
-            if choice.get("finish_reason") == "length":
-                next_budget = min(1024, token_budget * 2)
-                if decode_attempt or next_budget <= token_budget:
-                    raise ASRTruncatedError(f"ASR output truncated (finish_reason=length, max_tokens={token_budget})")
-                token_budget = next_budget
-                continue
-            text = choice["message"]["content"]
-            # Model output can contain language Japanese<asr_text>...
-            if "<asr_text>" in text:
-                lang, text = text.split("<asr_text>", 1)
-                if self.lang and self.lang not in lang:
-                    return ""  # Preserve existing noise/music rejection semantics.
-            return _clean(text)
-        raise ASRTruncatedError("ASR output truncated")
+        body = json.dumps({"messages": msgs, "max_tokens": 200, "temperature": 0.0, "cache_prompt": True}).encode()
+        req = self.urllib.Request(self.url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
+        with self.urllib.urlopen(req, timeout=60) as r:
+            out = json.loads(r.read().decode())
+        text = out["choices"][0]["message"]["content"]
+        # 模型输出形如 "language Chinese<asr_text>正文"
+        if "<asr_text>" in text:
+            lang, text = text.split("<asr_text>", 1)
+            if self.lang and self.lang not in lang:
+                return ""      # 指定了语言，但这段判成别的语言（多半是音乐/噪声），丢掉
+        return _clean(text)
 
     def close(self):
-        self._closed = True
-        with self._restart_lock:
-            self._stop_owned_server()
+        if self.proc is not None:
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
 
 
 class DebugLog:
@@ -1669,10 +1437,8 @@ class DebugLog:
 
     def __init__(self, d):
         import json
-        import uuid
         self.json = json
         self.d = d
-        self.session_id = uuid.uuid4().hex
         os.makedirs(d, exist_ok=True)
         self.f = open(os.path.join(d, "log.jsonl"), "a", encoding="utf-8")
         self.t0 = time.time()
@@ -1680,13 +1446,10 @@ class DebugLog:
     def write(self, rec, audio=None):
         import wave
         if audio is not None:
-            fn = f"{self.session_id}_seg{rec['seg']:04d}.wav"
-            # Exclusive create prevents accidental overwrite even if a session
-            # ID ever collides or two ASR instances share the same debug folder.
-            with open(os.path.join(self.d, fn), "xb") as output:
-                with wave.open(output, "wb") as w:
-                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
-                    w.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
+            fn = f"seg{rec['seg']:04d}.wav"
+            with wave.open(os.path.join(self.d, fn), "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
+                w.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
             rec["wav"] = fn
         self.f.write(self.json.dumps(rec, ensure_ascii=False) + "\n"); self.f.flush()
 
@@ -1717,150 +1480,18 @@ def load_hotwords(args):
 
 # ============================ 识别循环 ============================
 def _clean(text):
-    text = text.strip()
-    # Japanese repetition can be intentional speech (ははは, はいはいはい).
-    # Do not delete real kana utterances while trying to suppress hallucinations.
-    if not re.search(r"[\u3040-\u30ff]", text):
-        text = re.sub(r"(.)\1{4,}", r"\1", text)
-        text = re.sub(r"(.{2,6})(?:\1){3,}", r"\1", text)
+    text = re.sub(r"(.)\1{4,}", r"\1", text.strip())        # "语语语语语" 复读幻觉
+    text = re.sub(r"(.{2,6})(?:\1){3,}", r"\1", text)        # 短语复读
     text = re.sub(r"\b([A-Za-z0-9])((?: [A-Za-z0-9])+)\b", lambda m: m.group(0).replace(" ", ""), text)  # "B L G" -> "BLG"
     text = re.sub(r"(?<=[一-鿿]) (?=[A-Za-z0-9])|(?<=[A-Za-z0-9]) (?=[一-鿿])", "", text)  # 中英之间去空格
     return text
 
 
-def _common_prefix(texts):
-    texts = list(texts)
-    # An empty hypothesis is a conflict, not evidence of an unchanged prefix.
-    if not texts or any(not t for t in texts):
-        return ""
-    prefix = texts[0]
-    for text in texts[1:]:
-        n = min(len(prefix), len(text))
-        i = 0
-        while i < n and prefix[i] == text[i]:
-            i += 1
-        prefix = prefix[:i]
-        if not prefix:
-            break
-    return prefix
-
-
-class _PartialStabilizer:
-    """商业字幕式 provisional/stable 状态：前缀连续多次一致后锁定，尾部继续允许修改。"""
-    def __init__(self, confirm_count=3):
-        self.confirm_count = max(2, int(confirm_count))
-        self.history = collections.deque(maxlen=self.confirm_count)
-        self.stable = ""
-        self.display = ""
-        self.conflicts = 0
-
-    def reset(self):
-        self.history.clear()
-        self.stable = ""
-        self.display = ""
-        self.conflicts = 0
-
-    def update(self, raw_text):
-        candidate = _clean(raw_text)
-        self.history.append(candidate)
-
-        if len(self.history) == self.confirm_count:
-            common = _common_prefix(self.history)
-            if common.startswith(self.stable) and len(common) > len(self.stable):
-                self.stable = common
-
-        # Qwen3-ASR 不是 stateful streaming 模型。单次冲突先抑制，避免字幕抖动；
-        # 如果连续 confirm_count 次都冲突，则认为旧 stable 已过时，允许回退并纠正。
-        if self.stable and not candidate.startswith(self.stable):
-            self.conflicts += 1
-            if self.conflicts < self.confirm_count:
-                return self.display, self.stable
-            self.stable = _common_prefix([self.stable, candidate])
-            self.history.clear()
-            self.history.append(candidate)
-            self.conflicts = 0
-        else:
-            self.conflicts = 0
-
-        self.display = candidate
-        return candidate, self.stable
-
-
-_PUNC_EOS = "。！？?!"
-_HESITATION_ENDINGS = (
-    "あの", "あのー", "えー", "ええと", "えっと", "その", "そのー",
-    "だから", "それで", "でも", "そして", "というか", "なんか",
-)
-
-
-def _select_reusable_partial(done, reason, speech_samples):
-    """Original author policy: reuse only a silence Final with full speech coverage.
-
-    A maxlen/overflow/shutdown Final always gets a fresh complete ASR pass.
-    Empty or incomplete hypotheses are never promoted.
-    """
-    if (reason == "silence" and done and done[1]
-            and done[0] >= speech_samples):
-        return done[1]
-    return None
-
-
-def _endpoint_silence(base_silence, partial_text, punct_silence=0.40, hesitation_silence=1.10):
-    """根据当前 partial 动态调整 speech-final 静音阈值。"""
-    text = (partial_text or "").strip()
-    if not text:
-        return base_silence
-    if text[-1] in _PUNC_EOS:
-        return min(base_silence, punct_silence)
-    stripped = text.rstrip("、，, ")
-    if any(stripped.endswith(x) for x in _HESITATION_ENDINGS):
-        return max(base_silence, hesitation_silence)
-    return base_silence
-
-
 def run_asr(args, sink, stop, status=None):
-    """Own all ASR resources, including failures before capture starts."""
-    resources = {}
-    try:
-        return _run_asr_impl(args, sink, stop, status, resources)
-    finally:
-        stop.set()
-        stream = resources.get("stream")
-        if stream is not None:
-            for action in (stream.stop_stream, stream.close):
-                try:
-                    action()
-                except Exception as exc:
-                    print("关闭音频流失败:", repr(exc), flush=True)
-        backend = resources.get("backend")
-        if backend is not None:
-            try:
-                backend.close()
-            except Exception as exc:
-                print("关闭识别服务失败:", repr(exc), flush=True)
-        audio = resources.get("pa")
-        if audio is not None:
-            try:
-                audio.terminate()
-            except Exception as exc:
-                print("关闭 PyAudio 失败:", repr(exc), flush=True)
-        debug = resources.get("debug")
-        if debug is not None:
-            debug.f.close()
-
-
-def _validate_vad_window(value):
-    import math
-    if not math.isfinite(value) or int(SR * value) < 1:
-        raise ValueError("--vad-win must be positive and at least one audio sample")
-
-
-def _run_asr_impl(args, sink, stop, status, resources):
-    _validate_vad_window(args.vad_win)
-    from faster_whisper.vad import get_vad_model
+    from faster_whisper.vad import get_speech_timestamps, VadOptions, get_vad_model
+    import collections
 
     pa = pyaudio.PyAudio()
-    resources["pa"] = pa
     dev = get_loopback_device(pa, args.device)
     print(f"采集: {dev['name']}  ({int(dev['defaultSampleRate'])} Hz, {int(dev['maxInputChannels'])} ch)")
     hot = load_hotwords(args)
@@ -1868,54 +1499,34 @@ def _run_asr_impl(args, sink, stop, status, resources):
         print(f"热词: {hot}")
     here = os.path.dirname(os.path.abspath(__file__))
     t = time.time()
-    if not args.llama_server and not args.llama_url:
-        # Connecting to an explicit remote server needs no local executable.
-        args.llama_server = find_llama_server(here)
-    model = args.model or os.path.join(here, "models", "Qwen3-ASR-1.7B-Q8_0.gguf")
-    mmproj = args.mmproj or os.path.join(here, "models", "mmproj-Qwen3-ASR-1.7B-bf16.gguf")
-    print(f"加载模型 {os.path.basename(model)} (llama.cpp) …", flush=True)
-    if status:
-        status("加载模型 (llama.cpp) …")
-    be = LlamaBackend(args.llama_server, model, mmproj, args.lang, hot, args.context,
-                      args.llama_port, args.llama_url, args.slots, args.ctx_size,
-                      args.context_history, args.context_chars, args.max_tokens, args.temperature)
-    resources["backend"] = be
-    vad_model = get_vad_model()
-    vad = _StreamingSileroVAD(
-        vad_model, args.vad_threshold, args.vad_min_speech_ms, args.vad_min_silence_ms
-    )
+    if args.backend == "llama":
+        if not args.llama_server:
+            args.llama_server = find_llama_server(here)
+        model = args.model or os.path.join(here, "models", "Qwen3-ASR-1.7B-Q8_0.gguf")
+        mmproj = args.mmproj or os.path.join(here, "models", "mmproj-Qwen3-ASR-1.7B-bf16.gguf")
+        print(f"加载模型 {os.path.basename(model)} (llama.cpp) …", flush=True)
+        if status:
+            status("加载模型 (llama.cpp) …")
+        be = LlamaBackend(args.llama_server, model, mmproj, args.lang, hot, args.context, args.llama_port, args.llama_url, args.slots)
+    else:
+        model = args.model or "Qwen/Qwen3-ASR-1.7B"
+        print(f"加载模型 {model} (transformers) …", flush=True)
+        if status:
+            status(f"加载模型 {model} …")
+        be = QwenBackend(model, args.lang, hot, args.context)
+    get_vad_model()
     be.warmup()
     print(f"模型就绪 {time.time() - t:.1f}s。开始监听。\n", flush=True)
     if status:
         status("● 监听中")
     dbg = DebugLog(args.debug) if args.debug else None
-    resources["debug"] = dbg
 
-    # ---- 原作者逻辑：静音段可复用覆盖完整语音的 Partial；maxlen 必须完整重识别 ----
+    # ---- 两个识别线程：A 只做最终句(按序)，B 只做临时句(只留最新)；server 开了 2 个槽位可并行 ----
     cv = threading.Condition()
-    final_input_done = threading.Event()
     final_q = collections.deque()
-    max_queued_finals = 16
     partial_slot = [None]
-    partial_done = {}   # seg -> (last covered sample count, raw ASR text)
-    final_busy = [False]  # Give queued/in-flight Final work priority over new Partial calls.
     last_final_seg = [-1]
-    active_seg = [0]
-    partial_live = {"seg": -1, "text": "", "stable": "", "updated": 0.0}
-    partial_live_lock = threading.Lock()
-    partial_stabilizer = _PartialStabilizer(getattr(args, "stable_count", 3))
-    stabilizer_seg = [-1]
-
-    last_error_print = [0.0]
-    error_log_lock = threading.Lock()
-
-    def report_asr_error(exc):
-        # Network outages should not produce thousands of identical log lines.
-        with error_log_lock:
-            now = time.monotonic()
-            if now - last_error_print[0] >= 5.0:
-                print("识别出错（自动恢复中）:", repr(exc), flush=True)
-                last_error_print[0] = now
+    partial_done = {}          # seg -> (覆盖到的样本数, 文本)，句尾若无新语音则直接复用，省一次推理
 
     def log_dbg(job, text, t0, t1, reused=False):
         if not dbg:
@@ -1925,136 +1536,70 @@ def _run_asr_impl(args, sink, stop, status, resources):
                "speech_end": round(job["t_end"] - dbg.t0, 2), "queued": round(job["t_q"] - dbg.t0, 2),
                "infer_start": round(t0 - dbg.t0, 2), "infer_sec": round(t1 - t0, 2),
                "latency": round(t1 - job["t_end"], 2), "text": text}
-        try:
-            dbg.write(rec, job["audio"] if job["kind"] == "final" else None)
-        except Exception as exc:
-            # Debug I/O is optional; never kill Final/Partial ASR workers.
-            print("ASR 调试日志写入失败:", repr(exc), flush=True)
-
-    def transcribe_final_with_retries(audio):
-        """Final is accuracy-critical: bounded transient retry, never promote Partial."""
-        import urllib.error
-        for attempt in range(2):
-            try:
-                return be.transcribe(audio)
-            except ASRTruncatedError:
-                # Already retried with more tokens inside the backend.
-                raise
-            except (OSError, TimeoutError, RuntimeError) as exc:
-                if (attempt or isinstance(exc, urllib.error.HTTPError) and exc.code < 500):
-                    raise
-                report_asr_error(exc)
-                time.sleep(0.15)
+        dbg.write(rec, job["audio"] if job["kind"] == "final" else None)
 
     def worker_final():
         while True:
             with cv:
-                while not final_q and not final_input_done.is_set():
+                while not final_q and not stop.is_set():
                     cv.wait(0.2)
                 if not final_q:
                     return
                 job = final_q.popleft()
-                final_busy[0] = True
-                cv.notify_all()
             t0 = time.time()
-            try:
-                reused = job.get("text") is not None
+            reused = job.get("text") is not None
+            if reused:
+                text = job["text"]
+            else:
                 try:
-                    text = job["text"] if reused else transcribe_final_with_retries(job["audio"])
-                except Exception as exc:
-                    report_asr_error(exc)
-                    print(f"Final 识别失败：段 {job['seg']}，没有生成完整字幕：{exc!r}", flush=True)
-                    if status:
-                        try:
-                            status("⚠ Final 识别失败：可能缺少一句字幕")
-                        except Exception:
-                            pass
-                    log_dbg(job, "", t0, time.time())
-                    continue
-                t1 = time.time()
-                last_final_seg[0] = job["seg"]
-                if text:
-                    text = _clean(text)
-                    try:
-                        be.add_context(text)
-                    except Exception as exc:
-                        print("ASR 上下文更新失败:", repr(exc), flush=True)
-                    try:
-                        deliver = getattr(sink, "final_segment", None)
-                        if deliver is not None:
-                            deliver(text, job["t_start"], job["t_end"], job.get("reason"))
-                        else:
-                            sink.final(text, job["t_start"], job["t_end"])
-                    except Exception as exc:
-                        print("Final 字幕输出失败:", repr(exc), flush=True)
-                log_dbg(job, text, t0, t1, reused)
-            finally:
-                with cv:
-                    final_busy[0] = False
-                    cv.notify_all()
+                    text = be.transcribe(job["audio"])
+                except Exception as e:
+                    print("识别出错:", repr(e), flush=True); continue
+            t1 = time.time()
+            last_final_seg[0] = job["seg"]
+            if text:
+                be.last = text
+                sink.final(text, job["t_start"], job["t_end"])
+            log_dbg(job, text, t0, t1, reused)
 
     def worker_partial():
         while not stop.is_set():
             with cv:
-                while (partial_slot[0] is None or final_q or final_busy[0]) and not stop.is_set():
+                while partial_slot[0] is None and not stop.is_set():
                     cv.wait(0.2)
                 if stop.is_set():
                     return
                 job, partial_slot[0] = partial_slot[0], None
-            if job["seg"] <= last_final_seg[0] or job["seg"] != active_seg[0]:
-                continue  # Skip already-finalized work before spending GPU time.
             t0 = time.time()
             try:
                 text = be.transcribe(job["audio"])
             except Exception as e:
-                report_asr_error(e)
-                continue
+                print("识别出错:", repr(e), flush=True); continue
             t1 = time.time()
-            if job["seg"] <= last_final_seg[0] or job["seg"] != active_seg[0]:
-                continue                          # final/切句后到达的旧 partial 直接作废
-            # Cache the raw full-utterance hypothesis, never the stabilized display.
-            # Late/stale Partial work was rejected by the checks above.
+            if job["seg"] <= last_final_seg[0]:
+                continue                          # 这段已经出最终结果了，临时结果作废
             partial_done[job["seg"]] = (len(job["audio"]), text)
-            if job["seg"] != stabilizer_seg[0]:
-                partial_stabilizer.reset()
-                stabilizer_seg[0] = job["seg"]
-            display, stable = partial_stabilizer.update(text)
-            with partial_live_lock:
-                partial_live.update({"seg": job["seg"], "text": display, "stable": stable, "updated": t1})
-            if display:
-                fn = getattr(sink, "partial_stable", None)
-                if fn:
-                    fn(display, stable)
-                else:
-                    sink.partial(display)
-            log_dbg(job, display, t0, t1)
+            if text:
+                sink.partial(text)
+            log_dbg(job, text, t0, t1)
 
     ths = [threading.Thread(target=worker_final, daemon=True), threading.Thread(target=worker_partial, daemon=True)]
+    for th in ths:
+        th.start()
 
     def submit(kind, audio, seg, t_start, t_end, reason=None, text=None):
         job = {"kind": kind, "audio": audio, "seg": seg, "t_start": t_start, "t_end": t_end,
                "t_q": time.time(), "reason": reason, "text": text}
         with cv:
             if kind == "final":
-                while len(final_q) >= max_queued_finals:
-                    if not ths[0].is_alive():
-                        raise RuntimeError("Final ASR worker exited with queued audio")
-                    cv.wait(timeout=0.1)
                 final_q.append(job)
             else:
                 partial_slot[0] = job
             cv.notify_all()
 
-    # The audio callback never blocks: backlog is bounded and discontinuities
-    # are detected by sequence IDs before combining unrelated audio.
-    audio_q = _AudioChunkQueue(max_chunks=128)
+    vad_opts = VadOptions(threshold=0.45, min_speech_duration_ms=100, min_silence_duration_ms=200, speech_pad_ms=100)
+    audio_q = queue.Queue()
     stream = start_capture(pa, dev, audio_q, stop)
-    resources["stream"] = stream
-    # Never launch workers until audio capture has opened successfully;
-    # an early WASAPI exception otherwise leaves a Final worker waiting
-    # forever for final_input_done, which only the capture loop sets.
-    for th in ths:
-        th.start()
 
     buf = np.zeros(0, dtype=np.float32)
     seg_id = 0
@@ -2063,198 +1608,137 @@ def _run_asr_impl(args, sink, stop, status, resources):
     last_partial = 0.0
     vad_win = np.zeros(0, dtype=np.float32)
     WIN = int(SR * args.vad_win)
-    silence_samples = 0
-    speech_samples = 0
-    preroll_samples = int(args.vad_speech_pad_ms * SR / 1000)
-    preroll = _SpeechPreroll(preroll_samples)
-    last_seq = -1
+    speech_samples = 0        # 当前句里最后一个语音窗口结束时的样本数
     run_peak = 0.0     # 自动增益：loopback 是系统音量后的信号，音量小时峰值可能只有 0.01
-    t_run0 = time.monotonic()
+    t_run0 = time.time()
 
     try:
-        capture_stopped = False
-        while True:
-            if args.duration and time.monotonic() - t_run0 > args.duration:
-                stop.set()
-            if stop.is_set():
-                if not capture_stopped:
-                    # Stop the callback first; then preserve all captured audio
-                    # already waiting in the bounded ingress queue.
-                    try:
-                        stream.stop_stream()
-                    except Exception:
-                        pass
-                    capture_stopped = True
-                try:
-                    chunk, now, seq = audio_q.get(timeout=0.02)
-                except queue.Empty:
-                    break
-            else:
-                try:
-                    chunk, now, seq = audio_q.get(timeout=0.5)
-                except queue.Empty:
-                    if not stop.is_set():
-                        # WASAPI can be active while playing silence; only
-                        # treat a stream explicitly reported as dead as failure.
-                        is_active = getattr(stream, "is_active", None)
-                        if is_active is not None:
-                            try:
-                                alive = is_active()
-                            except Exception as exc:
-                                msg = f"音频采集状态查询失败: {exc!r}"
-                                if status:
-                                    status("⚠ 音频采集中断")
-                                raise RuntimeError(msg) from exc
-                            if not alive:
-                                msg = "音频采集已中断：WASAPI 流停止运行"
-                                print(msg, flush=True)
-                                if status:
-                                    status("⚠ 音频采集中断")
-                                raise RuntimeError(msg)
-                    continue
-            if last_seq >= 0 and seq != last_seq + 1:
-                print(f"音频队列溢出：丢弃 {seq - last_seq - 1} 块，重新同步 VAD。", flush=True)
-                if seg_start is not None and len(buf) > 0:
-                    submit("final", buf.copy(), seg_id, seg_start, last_speech, "overflow")
-                partial_done.pop(seg_id, None)
-                seg_id += 1
-                active_seg[0] = seg_id
-                buf = np.zeros(0, dtype=np.float32)
-                vad_win = np.zeros(0, dtype=np.float32)
-                seg_start = last_speech = None
-                silence_samples = 0
-                speech_samples = 0
-                preroll.clear()
-                vad.reset()
-                with partial_live_lock:
-                    partial_live.update({"seg": seg_id, "text": "", "stable": "", "updated": now})
-            last_seq = seq
-            if not len(chunk):
+        while not stop.is_set():
+            if args.duration and time.time() - t_run0 > args.duration:
+                break
+            try:
+                chunk = audio_q.get(timeout=0.5)
+            except queue.Empty:
                 continue
+            now = time.time()
             pk = float(np.abs(chunk).max())
             run_peak = max(pk, run_peak * 0.998)
             if run_peak > 1e-4:
                 chunk = chunk * min(args.max_gain, 0.5 / run_peak)
             vad_win = np.concatenate([vad_win, chunk])
-            while len(vad_win) >= WIN:
-                win, vad_win = vad_win[:WIN], vad_win[WIN:]
-                win_time = now - len(vad_win) / SR
-                # Keep the RNN state evolving even through silence.
-                speech = vad(win)
-                if speech:
-                    if seg_start is None:
-                        buf = np.concatenate((preroll.take(), win))
-                        seg_start, last_partial = win_time - len(buf) / SR, win_time
-                        preroll.clear()
-                    else:
-                        buf = np.concatenate((buf, win))
-                    last_speech = win_time
-                    speech_samples = len(buf)
-                    silence_samples = 0
-                elif seg_start is not None:
-                    buf = np.concatenate((buf, win))
-                    silence_samples += len(win)
-                else:
-                    preroll.add(win)
+            if len(vad_win) < WIN:
+                continue
+            win, vad_win = vad_win[:WIN], vad_win[WIN:]
 
+            speech = bool(get_speech_timestamps(win, vad_opts)) if np.abs(win).max() > 1e-3 else False
+
+            if speech:
                 if seg_start is None:
-                    continue
+                    seg_start, last_partial = now - 0.3, now
+                last_speech = now
+                buf = np.concatenate([buf, win])
+                speech_samples = len(buf)
+            elif seg_start is not None:
+                buf = np.concatenate([buf, win])
 
-                seg_len = len(buf) / SR
-                sil = silence_samples / SR
-                with partial_live_lock:
-                    live_text = partial_live["text"] if partial_live["seg"] == seg_id else ""
+            if seg_start is None:
+                continue
 
-                # speech-final 与 stable 分离：标点可更快结束，犹豫/连接词则延长等待。
-                endpoint_silence = _endpoint_silence(
-                    args.silence, live_text,
-                    getattr(args, "punct_silence", 0.40),
-                    getattr(args, "hesitation_silence", 1.10),
-                )
-                hard_silence = max(endpoint_silence * 2.5, args.silence * 2.5)
-
-                reason = None
-                if (sil >= endpoint_silence and seg_len >= args.min_seg) or sil >= hard_silence:
-                    reason = "silence"
-                elif args.max_seg > 0 and seg_len >= args.max_seg:
-                    reason = "maxlen"
-                if reason:
-                    done = partial_done.pop(seg_id, None)
-                    reuse = _select_reusable_partial(done, reason, speech_samples)
-                    submit("final", buf.copy(), seg_id, seg_start, last_speech, reason, reuse)
-                    seg_id += 1
-                    active_seg[0] = seg_id
-                    with partial_live_lock:
-                        partial_live.update({"seg": seg_id, "text": "", "stable": "", "updated": win_time})
-                    buf = np.zeros(0, dtype=np.float32)
-                    silence_samples = 0
-                    speech_samples = 0
-                    seg_start = last_speech = None
-                elif not args.no_partial and win_time - last_partial >= args.partial_every and seg_len >= 1.0:
-                    last_partial = win_time
-                    # 非 stateful ASR 使用完整当前 utterance。RTX 3090 的实测性能足以支撑
-                    # 0.6s cadence，同时避免 rolling window 无时间戳对齐造成重复/错拼。
-                    submit("partial", buf.copy(), seg_id, seg_start, last_speech)
+            seg_len = len(buf) / SR
+            sil = now - last_speech
+            # 句子结束：静音够长且句子不太短；或静音很长；或句子太长强制切
+            reason = None
+            if (sil >= args.silence and seg_len >= args.min_seg) or sil >= args.silence * 2.5:
+                reason = "silence"
+            elif seg_len >= args.max_seg:
+                reason = "maxlen"
+            if reason:
+                done = partial_done.pop(seg_id, None)
+                reuse = done[1] if (done and reason == "silence" and done[0] >= speech_samples) else None
+                submit("final", buf, seg_id, seg_start, last_speech, reason, reuse)
+                seg_id += 1
+                buf = np.zeros(0, dtype=np.float32)
+                seg_start = last_speech = None
+            elif not args.no_partial and now - last_partial >= args.partial_every and seg_len >= 1.0:
+                last_partial = now
+                submit("partial", buf.copy(), seg_id, seg_start, last_speech)
     finally:
-        stop.set()
         partial_done.clear()
+        stop.set()
         try:
-            stream.stop_stream()
+            stream.stop_stream(); stream.close()
         except Exception:
             pass
-        if len(vad_win) and seg_start is not None:
-            # The last callback may end between VAD windows. Classify the
-            # remaining samples with padding only at shutdown, and if they
-            # contain speech advance the end timestamp to the callback end.
-            leftover = vad_win
-            buf = np.concatenate((buf, leftover))
-            padded = np.pad(leftover, (0, WIN - len(leftover)))
-            # Silero may remain in its "speaking" state briefly after speech
-            # ended; do not advance the timestamp for a truly silent tail.
-            tail_has_signal = float(np.max(np.abs(leftover))) > 0.02
-            if vad(padded) and tail_has_signal:
-                last_speech = max(last_speech or seg_start, now)
-        # Signal that queued audio has been consumed and no more Final jobs
-        # can arrive. stop alone is not sufficient: workers must keep running
-        # while the bounded input queue is drained.
-        final_input_done.set()
-        with cv:
-            cv.notify_all()
+        pa.terminate()
+        if len(buf) > SR * 0.5:
+            text = be.transcribe(buf)
+            if text:
+                sink.final(text, seg_start or time.time(), time.time())
         for th in ths:
-            th.join()
-        # The unfinished utterance is always the last segment; emit it only
-        # after all queued finals, preserving spoken order at shutdown.
-        if len(buf) > 0 and seg_start is not None:
-            t_end = last_speech if last_speech is not None else seg_start + len(buf) / SR
-            tail_job = {"kind": "final", "audio":buf.copy(), "seg":seg_id,
-                        "t_start":seg_start, "t_end":t_end, "t_q":time.time(),
-                        "reason":"shutdown"}
-            t0 = time.time()
-            try:
-                text = transcribe_final_with_retries(tail_job["audio"])
-            except Exception as exc:
-                print("最后一段识别失败:", repr(exc), flush=True)
-                if status:
-                    try:
-                        status("⚠ 最后一段 ASR 失败：字幕可能缺失")
-                    except Exception:
-                        pass
-            else:
-                t1 = time.time()
-                if text:
-                    text = _clean(text)
-                    try:
-                        deliver = getattr(sink, "final_segment", None)
-                        if deliver is not None:
-                            deliver(text, seg_start, t_end, "shutdown")
-                        else:
-                            sink.final(text, seg_start, t_end)
-                    except Exception as exc:
-                        print("最后一段字幕输出失败:", repr(exc), flush=True)
-                log_dbg(tail_job, text, t0, t1)
+            th.join(timeout=10)
+        if hasattr(be, "close"):
+            be.close()
+
+
+def _validate_vad_window(value):
+    import math
+    if not math.isfinite(value) or int(SR * value) < 1:
+        raise ValueError("--vad-win must be positive and at least one audio sample")
+
 
 
 # ============================ 入口 ============================
+# GUI-only launcher adapter. The upstream LlamaBackend and run_asr above are unchanged.
+# This adapter only changes llama-server launch flags when UI context != upstream 8192.
+_LC_RUNTIME_CTX_SIZE = 8192
+class _LCContextBackend(LlamaBackend):
+    def __init__(self, server_exe, model, mmproj, lang, hotwords, use_context, port=8765, url=None, slots=2, ctx_size=8192):
+        requested_ctx = _LC_RUNTIME_CTX_SIZE if ctx_size == 8192 else ctx_size
+        if requested_ctx == 8192:
+            return super().__init__(server_exe, model, mmproj, lang, hotwords, use_context,
+                                    port=port, url=url, slots=slots)
+        ctx_size = requested_ctx
+        import subprocess, urllib.request, socket, json
+        self.urllib = urllib.request
+        self.lang = QWEN_LANG.get(lang, lang) if lang else None
+        self.hot = hotwords or ""
+        self.use_context = use_context
+        self.last = ""
+        self.proc = None
+        self.job = None
+        if url is None:
+            # 端口上已经有一个跑着同一个模型的 server（上次没关干净）就直接复用；被别的东西占着就换端口
+            existing = self._probe(f"http://127.0.0.1:{port}", model)
+            # A running server may use a different -c/-np even when the model matches.
+            # Start a dedicated server so UI settings are never silently ignored.
+            if existing != "none":
+                with socket.socket() as sk:
+                    sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
+            self.url = f"http://127.0.0.1:{port}"
+            cmd = [server_exe, "-m", model, "--mmproj", mmproj, "-ngl", "99", "--port", str(port),
+                   "-c", str(ctx_size), "--no-webui", "-np", str(slots), "--log-disable"]
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            self._bind_job(self.proc)
+        else:
+            self.url = url
+        # 等 /health
+        t0 = time.time()
+        while time.time() - t0 < 180:
+            try:
+                with self.urllib.urlopen(self.url + "/health", timeout=2) as r:
+                    if r.status == 200:
+                        break
+            except Exception:
+                if self.proc is not None and self.proc.poll() is not None:
+                    raise RuntimeError("llama-server 启动失败（退出码 %s）" % self.proc.returncode)
+                time.sleep(0.5)
+        else:
+            raise RuntimeError("llama-server 没起来")
+
+# run_asr resolves this backend name at runtime; the original ASR loop stays intact.
+LlamaBackend = _LCContextBackend
+
 def _apply_asr_config(args, settings, is_explicit, here, status=None):
     """Apply the same persisted recognition settings in both GUI and console modes."""
     mapping = {
@@ -2290,7 +1774,11 @@ def _apply_asr_config(args, settings, is_explicit, here, status=None):
             setattr(args, attr, max(low, min(high, value)))
         except (ValueError, TypeError):
             pass
-    if 0 < getattr(args, "max_seg", 30) < getattr(args, "min_seg", 0):
+    if getattr(args, "max_seg", None) == 0:
+        # Preserve the existing GUI/CLI meaning: 0 disables timed segmentation.
+        # The unchanged upstream loop otherwise cuts every speech window at 0.
+        args.max_seg = float("inf")
+    elif 0 < getattr(args, "max_seg", 30) < getattr(args, "min_seg", 0):
         args.max_seg = args.min_seg
     if not is_explicit("--no-context") and "context_enabled" in settings:
         setting = settings["context_enabled"]
@@ -2299,6 +1787,9 @@ def _apply_asr_config(args, settings, is_explicit, here, status=None):
         language = str(settings["asr_language"]).strip().lower()
         if language in ("auto", "ja"):
             args.lang = None if language == "auto" else "ja"
+    if args.model is None and getattr(args, "backend", "llama") == "hf":
+        # The restored upstream HF backend expects a Transformers model, not GGUF.
+        args.model = "Qwen/Qwen3-ASR-1.7B"
     if args.model is None:
         models = {"Q8_0": "Qwen3-ASR-1.7B-Q8_0.gguf", "BF16": "Qwen3-ASR-1.7B-bf16.gguf"}
         selected = str(settings.get("asr_model", "Q8_0")).upper()
@@ -2311,10 +1802,13 @@ def _apply_asr_config(args, settings, is_explicit, here, status=None):
                 status("⚠ BF16 不存在，已回退 Q8_0")
             target = fallback
         args.model = target
+    global _LC_RUNTIME_CTX_SIZE
+    _LC_RUNTIME_CTX_SIZE = int(getattr(args, 'ctx_size', 8192))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--backend", default="llama", choices=["llama", "hf"], help="llama=llama.cpp GGUF / hf=transformers")
     ap.add_argument("--list", action="store_true", help="列出输出设备后退出")
     ap.add_argument("--device", type=int, default=None, help="输出设备 index（默认=系统默认输出）")
     ap.add_argument("--model", default=None, help="GGUF 模型路径（默认 models/Qwen3-ASR-1.7B-Q8_0.gguf）")
@@ -2370,7 +1864,7 @@ def main():
     console = ConsoleSink(args.out, args.srt, show_partial=args.console and not args.no_partial)
 
     def cli_explicit(option):
-        return any(a == option or a.startswith(option + "=") for a in sys.argv[1:])
+        return any(a == option or a.startswith(option + "=") for a in _LC_ORIGINAL_ARGS)
 
     here = os.path.dirname(os.path.abspath(__file__))
     if args.console:
