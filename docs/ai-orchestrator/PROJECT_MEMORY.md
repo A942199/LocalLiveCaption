@@ -38,3 +38,10 @@ Add only verified project decisions and outcomes; do not include secrets.
 - Verified knowledge to retain: Source local only sha256 f6d48f2db5e7e3203861bcc692466e7515b127ba791435560dd799b9e73e452c. Source backup under ignored tests/results/asr_restore_20261023. Fix ctx_size => actual server -c, dedicated server avoids stale model-config reuse; main and restore .pyw synchronized; hide unsupported upstream-fixed UI options, high accuracy preset uses original defaults, Japanese remains language. Actual real GPU 31m accelerated podcast and twice real Windows speaker WASAPI Google2 Tk E2Es passed pipeline, old full suite 27fail+36error/107 not green, Chinese duplicate output remains.
 - Source task: `docs/ai-orchestrator/runs/asr-ui-param-fix-20261023/report.md`
 
+<!-- ai-orchestrator:checkpoint:v1:asr-12core-upstream-parity-20261023 -->
+## Durable checkpoint: asr-12core-upstream-parity-20261023
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `3a9384279831ade84bf99adee3709dbe062d96bb`
+- Verified knowledge to retain: TerryKiddy/live-caption original pinned commit 794fea1fd50f34e55a6e1e1537aa1659af61fea1 genuine GitHub file live_caption.py sha1 git blob 2247eed1a91218b358e767db1a87b019e2004bdf SHA256 37e925c5c9aef56ad4d171c1f2af3d1a100166fac0c2f26b653b78cb0958812b. Previous local fixture only prepended 2 comment lines, AST same. Current Windows local main+restore .pyw SHA256 afe3764de7d998d59b0c6d42d5d4b4b5e2be1a1798b120febb53e6cb0fb56182. 12/12 original ASR core AST nodes identical, 5 UI/SRT/translation/startup divergence intentionally preserved. _LCContextBackend adapter implements configured ctx4096 externally while original LlamaBackend and run_asr source definitions stay AST-identical. Tested RTX3090 real Google2 31m accelerated full input+real 36sec WASAPI, 16/16 targeted guard green; existing suite 107 with 25fails37errors remains not green, Google2 occasional error and duplicate Chinese semantics remain. No source pushed; local ignored tests/results/asr_restore_20261023/exact_terrykiddy_asr_parity_report_20261023.md.
+- Source task: `docs/ai-orchestrator/runs/asr-12core-upstream-parity-20261023/report.md`
+
