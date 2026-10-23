@@ -9,3 +9,11 @@ Windows local Japanese speech recognition with Qwen3 ASR, unchanged Tkinter UI a
 
 ## Durable decisions and lessons
 Add only verified project decisions and outcomes; do not include secrets.
+
+<!-- ai-orchestrator:checkpoint:v1:restore-terrykiddy-asr-20261023 -->
+## Durable checkpoint: restore-terrykiddy-asr-20261023
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `e4d342030544b891d73a5c13c1142df31d24c0e4`
+- Verified knowledge to retain: TerryKiddy upstream fixed commit 794fea1fd50f34e55a6e1e1537aa1659af61fea1. Backup local .pyw under ignored tests/results/asr_restore_20261023/live-caption-ja.before-restore.pyw SHA256 78e1e182ec6ceab196ebbe7c00ba77c22ad3965842148b06b62014c5de4167af. Exactly restored upstream AST for 11 ASR entry points; preserved existing UI and translation sink AST hashes. UI ASR settings introduced in local custom build may no longer affect original ASR. Local HEAD e4d342... is base commit only; dirty workspace content has no commit SHA. Release blocked on full suite and real Windows audio/GPU check. GitHub memory/docs branch contains documentation only.
+- Source task: `docs/ai-orchestrator/runs/restore-terrykiddy-asr-20261023/report.md`
+
