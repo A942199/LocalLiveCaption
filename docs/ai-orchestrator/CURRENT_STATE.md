@@ -16,3 +16,11 @@ A task checkpoint is not proof of tests, independent review, CI or merge.
 - Evidence references: 1
 This is a task checkpoint, not a merged default-branch state.
 
+<!-- ai-orchestrator:checkpoint:v1:asr-translation-e2e-20261023 -->
+## Task status update: asr-translation-e2e-20261023
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `6bd233474e5d78111fd3feab591011070d6bcaf4`
+- Summary: Two real Windows 36-second end-to-end trials passed: Japanese WAV output->SoundCore2 WASAPI loopback->RTX3090 Qwen3-ASR GGUF llama.cpp->real user-selected Google2 translation->actual Tk label. Session1 5 final+7 partial, 12 translation responses, 23 Chinese render events; session2 uses exact user saved ASR settings, 4 final+16 partial, 15 translation responses, 30 Chinese render events. Both exit 0, no leftover llama server or translator threads. User source/settings/history untouched, tested local source SHA256 4eb8e80a935395bc2d5298babe8512ce059715d3a4af59b588893fa46b9aed6f. Broader legacy tests still fail 5 and error 37 of 107; overlapping partial translations can display duplicated Chinese meaning. No code push, review or merge.
+- Evidence references: 2
+This is a task checkpoint, not a merged default-branch state.
+
