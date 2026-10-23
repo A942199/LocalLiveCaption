@@ -24,3 +24,11 @@ This is a task checkpoint, not a merged default-branch state.
 - Evidence references: 2
 This is a task checkpoint, not a merged default-branch state.
 
+<!-- ai-orchestrator:checkpoint:v1:long31m-e2e-20261023 -->
+## Task status update: long31m-e2e-20261023
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `5869f15c80f0dd2fb8c79d415e8d7a883bf3543c`
+- Summary: Full 31:01.851 Japanese podcast input (MP3 sha256 1494b4f6af1761d59f969c2554f0beb8f8522f7af104971ca6f4550df00ad737) decoded all 29,789,623 16k mono PCM samples, accelerated virtual audio input 10x through unchanged original TerryKiddy run_asr code object, RTX 3090 GGUF llama.cpp, live configured Google2 API, actual Tk subtitle labels hidden for usability. Local Windows successful second full replay elapsed 197.5s, 232 ASR Final, 1006 partials, 1305 model transcribe responses, 1083 translation requests, 923 API responses, 160 obsolete cancellation, 1 real Google2 Unexpected API response format, 1287 Chinese Tk render updates, zero remaining translation worker threads / llama-server processes. Local .pyw sha256 4eb8e80a935395bc2d5298babe8512ce059715d3a4af59b588893fa46b9aed6f unchanged. First full replay detected Windows GBK Japanese middle-dot UnicodeEncodeError in console output which crashed final worker; UTF8 redirected logging rerun passed; source code was not changed. Old legacy unittest suite 107 tests with 5 failures 37 errors, not resolved. This was accelerated simulated audio transport rather than physical 31min WASAPI continuous playback; separate previous 36sec 1x hardware captures passed. No code commit/push/merge.
+- Evidence references: 2
+This is a task checkpoint, not a merged default-branch state.
+
