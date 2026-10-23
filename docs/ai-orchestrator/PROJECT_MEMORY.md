@@ -31,3 +31,10 @@ Add only verified project decisions and outcomes; do not include secrets.
 - Verified knowledge to retain: Full 31m Japanese test audio in %TEMP%/yisheng-benchmark-20261020/yurugengo_479_31m.mp3 sha256 1494b4f6af1761d59f969c2554f0beb8f8522f7af104971ca6f4550df00ad737. Isolated ignored Windows test artifacts tests/results/asr_restore_20261023/long_31m_20261023_165616/{summary.json,events.jsonl} and long_31m_e2e_report_20261023.md. ASR+Google2+Tk dataflow pass over all 1861.851 seconds input with 10x accelerated virtual capture; hardware WASAPI 31-minute sustained stream not asserted. Windows GBK stdout encoding risk may crash final worker on katakana middle dot; rerun via UTF8 stdout avoids it without modifying code. One Google2 API response format error, 160 expected stale partial task cancellations, translation semantic duplicate bug remains. Quality/CI not green. Local source uncommitted unchanged.
 - Source task: `docs/ai-orchestrator/runs/long31m-e2e-20261023/report.md`
 
+<!-- ai-orchestrator:checkpoint:v1:asr-ui-param-fix-20261023 -->
+## Durable checkpoint: asr-ui-param-fix-20261023
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `ed553085d4ff961bc5aa7abd3819ccb5317565a0`
+- Verified knowledge to retain: Source local only sha256 f6d48f2db5e7e3203861bcc692466e7515b127ba791435560dd799b9e73e452c. Source backup under ignored tests/results/asr_restore_20261023. Fix ctx_size => actual server -c, dedicated server avoids stale model-config reuse; main and restore .pyw synchronized; hide unsupported upstream-fixed UI options, high accuracy preset uses original defaults, Japanese remains language. Actual real GPU 31m accelerated podcast and twice real Windows speaker WASAPI Google2 Tk E2Es passed pipeline, old full suite 27fail+36error/107 not green, Chinese duplicate output remains.
+- Source task: `docs/ai-orchestrator/runs/asr-ui-param-fix-20261023/report.md`
+
