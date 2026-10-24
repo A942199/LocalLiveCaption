@@ -31,3 +31,31 @@ Add only verified project decisions and outcomes; do not include secrets.
 - Verified knowledge to retain: Full 31m Japanese test audio in %TEMP%/yisheng-benchmark-20261020/yurugengo_479_31m.mp3 sha256 1494b4f6af1761d59f969c2554f0beb8f8522f7af104971ca6f4550df00ad737. Isolated ignored Windows test artifacts tests/results/asr_restore_20261023/long_31m_20261023_165616/{summary.json,events.jsonl} and long_31m_e2e_report_20261023.md. ASR+Google2+Tk dataflow pass over all 1861.851 seconds input with 10x accelerated virtual capture; hardware WASAPI 31-minute sustained stream not asserted. Windows GBK stdout encoding risk may crash final worker on katakana middle dot; rerun via UTF8 stdout avoids it without modifying code. One Google2 API response format error, 160 expected stale partial task cancellations, translation semantic duplicate bug remains. Quality/CI not green. Local source uncommitted unchanged.
 - Source task: `docs/ai-orchestrator/runs/long31m-e2e-20261023/report.md`
 
+<!-- ai-orchestrator:checkpoint:v1:asr-ui-param-fix-20261023 -->
+## Durable checkpoint: asr-ui-param-fix-20261023
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `ed553085d4ff961bc5aa7abd3819ccb5317565a0`
+- Verified knowledge to retain: Source local only sha256 f6d48f2db5e7e3203861bcc692466e7515b127ba791435560dd799b9e73e452c. Source backup under ignored tests/results/asr_restore_20261023. Fix ctx_size => actual server -c, dedicated server avoids stale model-config reuse; main and restore .pyw synchronized; hide unsupported upstream-fixed UI options, high accuracy preset uses original defaults, Japanese remains language. Actual real GPU 31m accelerated podcast and twice real Windows speaker WASAPI Google2 Tk E2Es passed pipeline, old full suite 27fail+36error/107 not green, Chinese duplicate output remains.
+- Source task: `docs/ai-orchestrator/runs/asr-ui-param-fix-20261023/report.md`
+
+<!-- ai-orchestrator:checkpoint:v1:asr-12core-upstream-parity-20261023 -->
+## Durable checkpoint: asr-12core-upstream-parity-20261023
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `3a9384279831ade84bf99adee3709dbe062d96bb`
+- Verified knowledge to retain: TerryKiddy/live-caption original pinned commit 794fea1fd50f34e55a6e1e1537aa1659af61fea1 genuine GitHub file live_caption.py sha1 git blob 2247eed1a91218b358e767db1a87b019e2004bdf SHA256 37e925c5c9aef56ad4d171c1f2af3d1a100166fac0c2f26b653b78cb0958812b. Previous local fixture only prepended 2 comment lines, AST same. Current Windows local main+restore .pyw SHA256 afe3764de7d998d59b0c6d42d5d4b4b5e2be1a1798b120febb53e6cb0fb56182. 12/12 original ASR core AST nodes identical, 5 UI/SRT/translation/startup divergence intentionally preserved. _LCContextBackend adapter implements configured ctx4096 externally while original LlamaBackend and run_asr source definitions stay AST-identical. Tested RTX3090 real Google2 31m accelerated full input+real 36sec WASAPI, 16/16 targeted guard green; existing suite 107 with 25fails37errors remains not green, Google2 occasional error and duplicate Chinese semantics remain. No source pushed; local ignored tests/results/asr_restore_20261023/exact_terrykiddy_asr_parity_report_20261023.md.
+- Source task: `docs/ai-orchestrator/runs/asr-12core-upstream-parity-20261023/report.md`
+
+<!-- ai-orchestrator:checkpoint:v1:publish-asr-source-20261023 -->
+## Durable checkpoint: publish-asr-source-20261023
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `cf6de6b4bf272a6867a8d3620f3c82b3a9fe32ea`
+- Verified knowledge to retain: GitHub push now COMPLETE for source: PR #19 branch agent/asr-ui-param-fix-20261023 added actual live-caption-ja.pyw commit cf6de6b4bf272a6867a8d3620f3c82b3a9fe32ea, blob 5fddbf844442956568dcd4b33181cdaaeec26941, corresponding local CRLF sha256 afe3764de7d998d59b0c6d42d5d4b4b5e2be1a1798b120febb53e6cb0fb56182. PR remains draft, not merged, main unchanged. Published only one program file plus preexisting docs branch, excluded all user settings/logs/tests/untracked. 16/16 targeted parity/ctx UI tests green; full legacy suite red 25 failures 37 errors /107; long GPU replay + short real WASAPI passing prior evidence. Docs checkpoint will add further commits and change PR head but not source code.
+- Source task: `docs/ai-orchestrator/runs/publish-asr-source-20261023/report.md`
+
+<!-- ai-orchestrator:checkpoint:v1:live-memory-diagnosis-20261024 -->
+## Durable checkpoint: live-memory-diagnosis-20261024
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `22491c9c486121788a62b0030f78c5dc0d648ac9`
+- Verified knowledge to retain: Live memory diagnosis 2026-10-24: user program running, two independent server PIDs sampled. 16396 9.63->11.83GB private over 85s while Python ~822MB; after app process replacement, server12356 5.73->7.90GB over110s while Python ~822MB, then app stopped; NO model interference. Actual llama-server 0.5.0-dev build11368 `-c8192 -np2`; /props two contexts 4096 each. Executable `--cache-ram` default 8192MiB, env LLAMA_ARG_CACHE_RAM=0 to disable RAM cache. Strong evidence host-memory creep from 8GiB prompt RAM cache, matching earlier ~5.6->13.33GiB plateau; not proven without A/B. Current code original ASR uses cache_prompt True, no --cache-ram override. No code or user config changed. Detailed report ignored path tests/results/asr_restore_20261023/live_memory_root_cause_20261024.md.
+- Source task: `docs/ai-orchestrator/runs/live-memory-diagnosis-20261024/report.md`
+
