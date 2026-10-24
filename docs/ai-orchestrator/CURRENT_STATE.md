@@ -72,3 +72,11 @@ This is a task checkpoint, not a merged default-branch state.
 - Evidence references: 0
 This is a task checkpoint, not a merged default-branch state.
 
+<!-- ai-orchestrator:checkpoint:v1:asr-parameter-pipeline-20261024 -->
+## Task status update: asr-parameter-pipeline-20261024
+- Outcome: `AWAITING_REVIEW`
+- Code HEAD before memory writes: `36183f2048f2a2ef577adf833ad047e1a9afc60c`
+- Summary: Local Windows Qwen3-ASR parameter pipeline repaired and validated with real GPU. HTTP max_tokens/temperature, dynamic VAD four knobs, context history/chars, HF max tokens, explicit ctx8192 corrected; all19 numeric bounds. 14 new focused tests and16 pinned upstream regressions pass. Real RTX3090 36s Q8_0+Silero+ASR worker test 36/36 sec with5 Final81 Partial and zero errors, user VAD setting .25/100/100/200 + tokens512 applied. Pre-existing full legacy 107 fail25/error36 unchanged. Upstream pinned source/UI/translation, user settings, disabled hotwords unchanged. Local source SHA dfa993fdbc996fded0634c030bd7b68842080860920e4483eaa0c1621f216fda; no code push.
+- Evidence references: 0
+This is a task checkpoint, not a merged default-branch state.
+
