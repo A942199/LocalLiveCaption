@@ -64,3 +64,11 @@ This is a task checkpoint, not a merged default-branch state.
 - Evidence references: 2
 This is a task checkpoint, not a merged default-branch state.
 
+<!-- ai-orchestrator:checkpoint:v1:hotwords-ab-test-20261024 -->
+## Task status update: hotwords-ab-test-20261024
+- Outcome: `COMPLETED`
+- Code HEAD before memory writes: `3ce44dce50ed82c96deef759afe1363bcb9c6aa8`
+- Summary: Local Windows RTX3090 ASR hotword A/B completed: four independent Q8_0 GGUF 31m offline replay passes of 233 paired 8s clips each, 0 model errors, plus four runs of eight labeled Japanese TTS utterances. Prompt-echo bug confirmed for lists of 3/12/50 (4/2/2 affected clips), not observed with 0. Source/settings/hotwords unchanged; local private report saved.
+- Evidence references: 0
+This is a task checkpoint, not a merged default-branch state.
+
